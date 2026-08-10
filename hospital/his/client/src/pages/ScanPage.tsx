@@ -81,6 +81,8 @@ export default function ScanPage() {
   const busyRef = useRef(false);
   const lastCodeRef = useRef('');
   const historyRef = useRef<ScanEntry[]>([]);
+  const barcodeBufferRef = useRef('');
+  const barcodeInputTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Keep historyRef in sync
   historyRef.current = history;
@@ -145,27 +147,47 @@ export default function ScanPage() {
         scan3_time: data.scan3_time || null,
         time: formatDateTime(new Date()),
       };
-      setHistory(prev => {
-        const others = prev.filter(e => e.trace_code !== newEntry.trace_code);
-        return [newEntry, ...others];
-      });
-      setToast({ text: (data.completed ? '已完成' : data.action + '成功'), type: 'success' });
+      setHistory(prev => [newEntry, ...prev.filter(e => e.trace_code !== newEntry.trace_code)]);
+      setToast({ text: data.completed ? '已完成' : data.action + '成功', type: 'success' });
     } catch (err: any) {
-      const msg = err.response?.data?.error || '未找到';
-      setToast({ text: msg, type: 'error' });
-    }
-
-    setTimeout(() => {
+      setToast({ text: err.response?.data?.error || '未找到', type: 'error' });
+    } finally {
       busyRef.current = false;
-      lastCodeRef.current = '';
-    }, 10000);
-
-    setTimeout(() => setToast(null), 2000);
+      setTimeout(() => { if (lastCodeRef.current === normalizedCode) lastCodeRef.current = ''; }, 1500);
+      setTimeout(() => setToast(null), 2000);
+    }
   };
 
   processCodeRef.current = processCode;
 
-  useEffect(() => { return () => { stopScanner(); }; }, []);
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
+      if (event.key === 'Enter') {
+        const value = barcodeBufferRef.current;
+        barcodeBufferRef.current = '';
+        if (value) void processCodeRef.current(value);
+        return;
+      }
+      if (event.key.length !== 1) return;
+      barcodeBufferRef.current += event.key;
+      if (barcodeInputTimerRef.current) clearTimeout(barcodeInputTimerRef.current);
+      barcodeInputTimerRef.current = setTimeout(() => {
+        const value = barcodeBufferRef.current;
+        barcodeBufferRef.current = '';
+        if (value.length >= 7) void processCodeRef.current(value);
+      }, 120);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (barcodeInputTimerRef.current) clearTimeout(barcodeInputTimerRef.current);
+      stopScanner();
+    };
+  }, []);
 
   const handleSearch = async () => {
     if (!searchCode.trim()) return;
@@ -229,6 +251,31 @@ export default function ScanPage() {
         .scan-toast { position: fixed; top: 60px; left: 50%; transform: translateX(-50%); z-index: 99999; padding: 10px 24px; border-radius: 50px; font-size: 15px; font-weight: 600; color: #fff; white-space: nowrap; box-shadow: 0 8px 32px rgba(0,0,0,0.4); }
         .scan-toast.success { background: linear-gradient(135deg, #5CB85C, #3D8B3D); }
         .scan-toast.error { background: linear-gradient(135deg, #DC2626, #B91C1C); }
+        .scan-app { color: var(--text); background: var(--bg); overflow: hidden; }
+        .scan-app::before { content: ''; position: absolute; width: 46vw; height: 46vw; min-width: 320px; min-height: 320px; right: -15vw; top: -18vw; border-radius: 50%; background: rgba(50,198,186,.18); filter: blur(48px); pointer-events: none; }
+        .scan-topbar, .scan-camera-area, .scan-ctrl, .scan-list, .scan-status { position: relative; z-index: 1; }
+        .scan-topbar { height: 62px; padding: 0 20px; color: var(--text); background: linear-gradient(180deg, rgba(255,255,255,.78), rgba(255,255,255,.46)); border-bottom: 1px solid var(--glass-border); box-shadow: 0 10px 30px rgba(36,86,138,.08); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur); }
+        .scan-topbar h1 { font-weight: 700; letter-spacing: .04em; }
+        .scan-topbar button, .scan-ctrl button { color: var(--text); border-color: var(--glass-border); background: var(--glass); box-shadow: var(--shadow); transition: var(--transition); }
+        .scan-topbar button:hover, .scan-ctrl button:hover { background: var(--glass-hover); box-shadow: var(--shadow-hover); transform: translateY(-1px); }
+        .scan-camera-area { width: min(820px, calc(100% - 32px)); align-self: center; aspect-ratio: 16 / 7; margin: 14px 16px 0; cursor: pointer; overflow: hidden; border: 1px solid var(--glass-border); border-radius: var(--radius-lg); background: rgba(234,246,255,.72); box-shadow: var(--shadow); }
+        #scanner-view { min-height: 0; height: 100%; background: rgba(234,246,255,.72); }
+        .scan-box { border: 1px solid rgba(255,255,255,.68); border-radius: 12px; box-shadow: 0 0 0 999px rgba(28,94,124,.08), 0 0 28px rgba(50,198,186,.48); }
+        .scan-box::before, .scan-box::after { border-color: var(--aqua); }
+        .scan-ctrl { gap: 9px; padding: 12px 16px 0; }
+        .scan-ctrl input { color: var(--text); border-color: var(--glass-border); background: rgba(255,255,255,.52); box-shadow: inset 0 1px 0 rgba(255,255,255,.72); }
+        .scan-ctrl input::placeholder, .scan-list-title, .scan-empty { color: var(--text-muted); }
+        .scan-ctrl button { height: 42px; font-weight: 600; }
+        .btn-scan { flex: 1; height: 44px !important; }
+        .btn-scan, .btn-search { background: linear-gradient(135deg, rgba(49,120,198,.35), rgba(50,198,186,.25)) !important; }
+        .scan-list-item { border: 1px solid var(--glass-border); border-radius: 14px; background: rgba(255,255,255,.48); box-shadow: 0 8px 22px rgba(36,86,138,.07), inset 0 1px 0 rgba(255,255,255,.7); }
+        .scan-list-item .code { color: var(--text-secondary); }
+        .scan-list-item .name { color: var(--text); font-weight: 700; }
+        .scan-list-item .time { color: var(--text-muted); }
+        .scan-toast { top: 74px; border: 1px solid rgba(255,255,255,.45); box-shadow: 0 14px 34px rgba(36,86,138,.24); backdrop-filter: blur(18px); }
+        .scan-toast.success { background: linear-gradient(135deg, rgba(53,166,107,.94), rgba(50,198,186,.92)); }
+        .scan-toast.error { background: linear-gradient(135deg, rgba(211,76,105,.94), rgba(173,52,76,.92)); }
+        @media (max-width: 480px) { .scan-topbar { height: 56px; padding: 0 14px; } .scan-camera-area { margin: 10px 12px 0; } .scan-ctrl { padding-left: 12px; padding-right: 12px; } .scan-list { padding-left: 12px; padding-right: 12px; } }
       `}</style>
 
       <div className="scan-topbar">
@@ -237,7 +284,7 @@ export default function ScanPage() {
         <button onClick={() => { stopScanner(); logout(); navigate('/login'); }}>退出</button>
       </div>
 
-      <div className="scan-camera-area">
+      <div className="scan-camera-area" onClick={() => !scanning && startScanner()} role="button" tabIndex={0} onKeyDown={e => e.key === 'Enter' && !scanning && startScanner()}>
         <div id="scanner-view" />
         {scanning && (
           <div className="scan-overlay">
@@ -246,18 +293,11 @@ export default function ScanPage() {
         )}
         {!scanning && (
           <div className="scan-overlay" style={{ background: 'rgba(0,0,0,0.3)' }}>
-            <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 14 }}>点击下方按钮启动扫码</div>
+            <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 14 }}>点击此处开启摄像头</div>
           </div>
         )}
       </div>
 
-      <div className="scan-ctrl">
-        {!scanning ? (
-          <button className="btn-scan" onClick={startScanner}>启动扫码</button>
-        ) : (
-          <button className="btn-stop" onClick={stopScanner}>停止扫码</button>
-        )}
-      </div>
 
       {/* Search input */}
       <div className="scan-ctrl" style={{ paddingTop: 0 }}>
