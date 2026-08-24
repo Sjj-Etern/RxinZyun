@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+opencv-python
+sqlalchemy
+pydantic-settings
+websockets
+pymysql
+requests

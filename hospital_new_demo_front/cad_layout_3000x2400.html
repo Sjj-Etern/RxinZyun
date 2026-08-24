@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>CAD Layout 3000x2400</title>
+    <style>
+        body {
+            background-color: #12171e;
+            color: #00ff00;
+            font-family: 'Courier New', Courier, monospace, Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+
+        .cad-container {
+            position: relative;
+            width: 750px; /* 3000 * 0.25 */
+            height: 600px; /* 2400 * 0.25 */
+            background-color: #1a222d;
+            /* CAD Grid */
+            background-image: 
+                linear-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+            background-size: 20px 20px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+        }
+
+        /* Room Outer Wall */
+        .room-outline {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            border: 2px solid #ffffff;
+            box-sizing: border-box;
+        }
+
+        /* White elements */
+        .white-line, .white-rect {
+            position: absolute;
+            border: 2px solid #ffffff;
+            box-sizing: border-box;
+        }
+
+        /* Elements definition */
+        .rect-bottom-left {
+            left: 0;
+            bottom: 0;
+            width: 175px; /* 700 * 0.25 */
+            height: 100px; /* 400 * 0.25 */
+        }
+
+        .wall-left {
+            left: 237.5px; /* 950 * 0.25 */
+            bottom: 0;
+            width: 2px;
+            height: 450px; /* 1800 * 0.25 */
+            background-color: #ffffff;
+            border: none;
+        }
+
+        .wall-mid {
+            left: 417.5px; /* (950 + 720) * 0.25 = 1670 * 0.25 = 417.5px */
+            top: 0;
+            width: 37.5px; /* 150 approx or open rect? In drawing it's a thin vertical rectangle, width ~150 (3000-950-720-1300=30? Wait 950+720+1330=3000, so width is 0 line or double line) */
+            /* In image: mid wall is a narrow rectangle from top. Let's make it 35px wide or thin tube */
+            width: 35px;
+            height: 450px; /* 1800 * 0.25 */
+        }
+
+        .rect-bottom-right {
+            right: 0;
+            bottom: 0;
+            width: 100px; /* 400 * 0.25 */
+            height: 175px; /* 700 * 0.25 */
+        }
+
+        .rect-top-right-upper {
+            right: 0;
+            top: 0;
+            width: 65px; /* 260 * 0.25 */
+            height: 100px; /* 400 * 0.25 approx (part of 800) */
+        }
+
+        .rect-top-right-lower {
+            right: 0;
+            top: 100px; /* 400 * 0.25 */
+            width: 100px; /* 400 * 0.25 */
+            height: 100px; /* 400 * 0.25 */
+        }
+
+        /* Dimension Annotations (Green & Yellow) */
+        .dim-line {
+            position: absolute;
+            pointer-events: none;
+        }
+
+        .dim-text {
+            position: absolute;
+            color: #ffff00;
+            font-size: 15px;
+            font-weight: bold;
+            text-shadow: 1px 1px 2px #000;
+            white-space: nowrap;
+        }
+
+        /* SVG Overlay for CAD dimension lines and arrows */
+        .svg-overlay {
+            position: absolute;
+            top: -60px;
+            left: -60px;
+            width: 870px;
+            height: 720px;
+            pointer-events: none;
+        }
+
+        .dim-path {
+            stroke: #00ff00;
+            stroke-width: 1.2;
+            fill: none;
+        }
+
+        .dim-arrow {
+            fill: #00ff00;
+        }
+
+        /* Crosshair Cursor in CAD style */
+        .crosshair {
+            position: absolute;
+            top: -40px;
+            left: 25px;
+            width: 80px;
+            height: 80px;
+            pointer-events: none;
+        }
+        .crosshair::before {
+            content: '';
+            position: absolute;
+            top: 40px;
+            left: 0;
+            width: 80px;
+            height: 1px;
+            background: #ffffff;
+        }
+        .crosshair::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 40px;
+            width: 1px;
+            height: 80px;
+            background: #ffffff;
+        }
+        .crosshair-box {
+            position: absolute;
+            top: 35px;
+            left: 35px;
+            width: 10px;
+            height: 10px;
+            border: 1px solid #ffffff;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="cad-container">
+        <!-- Room Outline -->
+        <div class="room-outline"></div>
+
+        <!-- CAD Elements -->
+        <div class="white-rect rect-bottom-left"></div>
+        <div class="wall-left"></div>
+        <div class="white-rect wall-mid"></div>
+        <div class="white-rect rect-bottom-right"></div>
+        <div class="white-rect rect-top-right-upper"></div>
+        <div class="white-rect rect-top-right-lower"></div>
+
+        <!-- Crosshair Cursor Icon -->
+        <div class="crosshair">
+            <div class="crosshair-box"></div>
+        </div>
+
+        <!-- CAD Dimensions SVG Overlay -->
+        <svg class="svg-overlay" viewBox="0 0 870 720">
+            <defs>
+                <marker id="arrow-start" viewBox="0 0 10 10" refX="0" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+                    <path d="M 10 0 L 0 5 L 10 10 z" class="dim-arrow" />
+                </marker>
+                <marker id="arrow-end" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+                    <path d="M 0 0 L 10 5 L 0 10 z" class="dim-arrow" />
+                </marker>
+            </defs>
+
+            <!-- Bottom Dimensions Offset +60, +60 -->
+            <!-- 950 -->
+            <line x1="60" y1="660" x2="297.5" y2="660" class="dim-path" marker-start="url(#arrow-start)" marker-end="url(#arrow-end)" />
+            <line x1="60" y1="660" x2="60" y2="675" class="dim-path" />
+            <line x1="297.5" y1="660" x2="297.5" y2="675" class="dim-path" />
+
+            <!-- 720 -->
+            <line x1="297.5" y1="660" x2="477.5" y2="660" class="dim-path" marker-start="url(#arrow-start)" marker-end="url(#arrow-end)" />
+            <line x1="477.5" y1="660" x2="477.5" y2="675" class="dim-path" />
+
+            <!-- 1330 -->
+            <line x1="477.5" y1="660" x2="810" y2="660" class="dim-path" marker-start="url(#arrow-start)" marker-end="url(#arrow-end)" />
+            <line x1="810" y1="660" x2="810" y2="675" class="dim-path" />
+
+            <!-- 3000 Overall Bottom -->
+            <line x1="60" y1="695" x2="810" y2="695" class="dim-path" marker-start="url(#arrow-start)" marker-end="url(#arrow-end)" />
+            <line x1="60" y1="660" x2="60" y2="710" class="dim-path" />
+            <line x1="810" y1="660" x2="810" y2="710" class="dim-path" />
+
+            <!-- Right Overall Dimension 2400 -->
+            <line x1="910" y1="60" x2="910" y2="660" class="dim-path" marker-start="url(#arrow-start)" marker-end="url(#arrow-end)" />
+            <line x1="810" y1="60" x2="925" y2="60" class="dim-path" />
+            <line x1="810" y1="660" x2="925" y2="660" class="dim-path" />
+
+            <!-- Inner Left 1800 Wall Dim -->
+            <line x1="322.5" y1="210" x2="322.5" y2="660" class="dim-path" marker-start="url(#arrow-start)" marker-end="url(#arrow-end)" />
+            <line x1="297.5" y1="210" x2="332.5" y2="210" class="dim-path" />
+
+            <!-- Inner Mid 1800 Wall Dim -->
+            <line x1="452.5" y1="60" x2="452.5" y2="510" class="dim-path" marker-start="url(#arrow-start)" marker-end="url(#arrow-end)" />
+            <line x1="417.5" y1="510" x2="462.5" y2="510" class="dim-path" />
+
+            <!-- Left Bottom Block Dims: 400 & 700 -->
+            <line x1="105" y1="560" x2="105" y2="660" class="dim-path" marker-start="url(#arrow-start)" marker-end="url(#arrow-end)" />
+            <line x1="105" y1="535" x2="235" y2="535" class="dim-path" marker-start="url(#arrow-start)" marker-end="url(#arrow-end)" />
+            <line x1="235" y1="535" x2="235" y2="560" class="dim-path" />
+
+            <!-- Right Elements Dims -->
+            <!-- 260 Top -->
+            <line x1="745" y1="35" x2="810" y2="35" class="dim-path" marker-start="url(#arrow-start)" marker-end="url(#arrow-end)" />
+
+            <!-- 800 Right Top Height -->
+            <line x1="720" y1="60" x2="720" y2="260" class="dim-path" marker-start="url(#arrow-start)" marker-end="url(#arrow-end)" />
+
+            <!-- 400 Inner Top Height -->
+            <line x1="750" y1="160" x2="750" y2="260" class="dim-path" marker-start="url(#arrow-start)" marker-end="url(#arrow-end)" />
+
+            <!-- 400 Mid Right Width -->
+            <line x1="710" y1="325" x2="810" y2="325" class="dim-path" marker-start="url(#arrow-start)" marker-end="url(#arrow-end)" />
+
+            <!-- 700 Right Bottom Height -->
+            <line x1="710" y1="485" x2="710" y2="660" class="dim-path" marker-start="url(#arrow-start)" marker-end="url(#arrow-end)" />
+        </svg>
+
+        <!-- Dimension Labels (Yellow text) -->
+        <div class="dim-text" style="bottom: -28px; left: 110px;">950</div>
+        <div class="dim-text" style="bottom: -28px; left: 300px;">720</div>
+        <div class="dim-text" style="bottom: -28px; left: 520px;">1330</div>
+        <div class="dim-text" style="bottom: -62px; left: 340px; font-size: 18px;">3000</div>
+
+        <div class="dim-text" style="right: -85px; top: 280px; transform: rotate(90deg); font-size: 18px;">2400</div>
+
+        <div class="dim-text" style="left: 270px; bottom: 210px; transform: rotate(-90deg);">1800</div>
+        <div class="dim-text" style="left: 400px; top: 220px; transform: rotate(90deg);">1800</div>
+
+        <div class="dim-text" style="left: 20px; bottom: 35px; transform: rotate(-90deg);">400</div>
+        <div class="dim-text" style="left: 100px; bottom: 110px;">700</div>
+
+        <div class="dim-text" style="right: 25px; top: -30px;">260</div>
+        <div class="dim-text" style="right: 135px; top: 60px; transform: rotate(-90deg);">800</div>
+        <div class="dim-text" style="right: 105px; top: 120px; transform: rotate(-90deg);">400</div>
+        <div class="dim-text" style="right: 40px; top: 235px;">400</div>
+        <div class="dim-text" style="right: 145px; bottom: 70px; transform: rotate(-90deg);">700</div>
+
+    </div>
+
+</body>
+</html>

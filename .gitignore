@@ -1,77 +1,71 @@
 # ============================================================
-# Hospital Intelligent Pharmacy System - Git Ignore
+# 医院药品运输系统根目录忽略规则
 # ============================================================
 
-# ------------------------------------------------------------
 # Python
-# ------------------------------------------------------------
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
 *.egg-info/
-dist/
-build/
-*.egg
-
-# Virtual Environment
 venv/
 env/
 .venv/
-.env.local
+*.egg
 
-# ------------------------------------------------------------
-# Node.js
-# ------------------------------------------------------------
+# Node.js / 前端构建
 node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
-
-# Build output
 dist/
 build/
+.vite/
 .next/
 out/
+*.tsbuildinfo
+vite.config.ts.timestamp-*
 
-# ------------------------------------------------------------
-# Database Files
-# ------------------------------------------------------------
+# 数据库与运行时文件
 *.db
+*.db-journal
 *.sqlite
 *.sqlite3
 app.db
 his.db
+logs/
+*.log
+*.tmp
+*.temp
+.cache/
 
-# ------------------------------------------------------------
-# Configuration & Secrets
-# ------------------------------------------------------------
-# Environment files with secrets
+# 环境配置、密码、证书和密钥
 .env
 .env.local
 .env.*.local
 *.env
-
-# Config files with passwords (keep template versions)
-hospital/hospital_back/config.py
-RosConnectCamara/camara/config.py
-RosConnectCamara/ros_camera_bridge/config.py
-
-# ------------------------------------------------------------
-# SSL Certificates & Keys
-# ------------------------------------------------------------
 *.pem
 *.key
 *.crt
 *.cert
+*.p12
+*.pfx
+hospital/hospital_back/config.py
+RosConnectCamara/camara/config.py
+RosConnectCamara/ros_camera_bridge/config.py
 hospital/his/client/cert.pem
 hospital/his/client/key.pem
 
-# ------------------------------------------------------------
-# IDE & Editor
-# ------------------------------------------------------------
+# ESP-IDF 构建产物与运行日志
+managed_components/
+sdkconfig.old
+error.txt
+message.txt
+debug.log
+
+# IDE / 操作系统
 .vscode/
 .idea/
 *.swp
@@ -80,28 +74,30 @@ hospital/his/client/key.pem
 .project
 .pydevproject
 .settings/
-
-# ------------------------------------------------------------
-# OS Generated Files
-# ------------------------------------------------------------
 .DS_Store
-.DS_Store?
 ._*
 .Spotlight-V100
 .Trashes
 ehthumbs.db
 Thumbs.db
+desktop.ini
 
-# ------------------------------------------------------------
-# Logs & Temporary Files
-# ------------------------------------------------------------
-logs/
-*.log
-*.tmp
-*.temp
-.cache/
+# 测试、覆盖率和临时压缩包
+.coverage
+htmlcov/
+.tox/
+.hypothesis/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+coverage.xml
+*.cover
+*.zip
+*.tar.gz
+*.rar
+*.7z
 
-# ROS/HIS调试日志文件（临时）
+# ROS/HIS 调试文件
 xsh*.tmp.txt
 xsh*.txt
 *.tmp.txt
@@ -109,41 +105,13 @@ xsh*.txt
 2.txt
 3.txt
 
-# ------------------------------------------------------------
-# Test & Coverage
-# ------------------------------------------------------------
-.coverage
-htmlcov/
-.tox/
-.hypothesis/
-.pytest_cache/
-coverage.xml
-*.cover
-
-# ------------------------------------------------------------
-# Package Files
-# ------------------------------------------------------------
-*.zip
-*.tar.gz
-*.rar
-*.7z
-
-# ------------------------------------------------------------
-# Misc
-# ------------------------------------------------------------
+# 其他临时文件
 *.bak
 *.backup
 *.orig
 *.pid
 *.seed
 *.pid.lock
-
-# Keep restart script
-!restart-all.ps1
-
-# ------------------------------------------------------------
-# Runtime log files (no extension)
-# ------------------------------------------------------------
 /ros端
 /服务端
 /1
