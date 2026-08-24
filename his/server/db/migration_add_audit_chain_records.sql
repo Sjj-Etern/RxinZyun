@@ -1,0 +1,21 @@
+CREATE TABLE IF NOT EXISTS audit_chain_records (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  event_type VARCHAR(50) NOT NULL,
+  entity_type VARCHAR(50) NOT NULL,
+  entity_id VARCHAR(100) NOT NULL,
+  trace_code_hash CHAR(64) NULL,
+  prescription_hash CHAR(64) NULL,
+  operator_hash CHAR(64) NULL,
+  flow_status VARCHAR(50) NOT NULL,
+  event_time DATETIME NOT NULL,
+  payload_json TEXT NOT NULL,
+  payload_hash CHAR(64) NOT NULL,
+  previous_hash CHAR(64) NOT NULL,
+  current_hash CHAR(64) NOT NULL,
+  created_at DATETIME NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE INDEX uk_current_hash (current_hash),
+  INDEX idx_event_type (event_type),
+  INDEX idx_entity (entity_type, entity_id),
+  INDEX idx_event_time (event_time)
+) ENGINE = InnoDB DEFAULT CHARACTER SET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci;

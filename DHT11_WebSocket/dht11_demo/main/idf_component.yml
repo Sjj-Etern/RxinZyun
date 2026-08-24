@@ -1,0 +1,16 @@
+# ESP-IDF 组件依赖配置文件
+# 用于管理 ESP32 组件依赖
+
+dependencies:
+  # WebSocket 客户端组件
+  espressif/esp_websocket_client:
+    version: "^1.2.0"
+
+  # 可选：JSON 解析库（如果需要处理服务器下发的复杂 JSON）
+  # espressif/json_parser:
+  #   version: "^1.0.0"
+
+# 注意：需要确保 esp_websocket_client 组件已正确安装
+# 可通过以下命令安装组件：
+#   idf.py reconfigure
+#   idf.py build
