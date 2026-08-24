@@ -2,19 +2,12 @@ import { Router, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import pool from '../db';
 import { generateToken, authMiddleware, AuthUser } from '../middleware/auth';
-import { isPastDeadline, SYSTEM_DEADLINE_MESSAGE } from '../config';
 
 const router = Router();
 
 // POST /api/auth/login
 router.post('/login', async (req: Request, res: Response) => {
   try {
-    // 检查系统截止日期
-    if (isPastDeadline()) {
-      res.status(403).json({ error: SYSTEM_DEADLINE_MESSAGE });
-      return;
-    }
-
     const { username, password } = req.body;
     if (!username || !password) {
       res.status(400).json({ error: '请输入用户名和密码' });

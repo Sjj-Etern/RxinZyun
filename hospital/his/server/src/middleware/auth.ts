@@ -1,7 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
-import { isPastDeadline, SYSTEM_DEADLINE_MESSAGE } from '../config';
-import { shouldSabotageToken } from '../guard';
 
 const JWT_SECRET = 'his_jwt_secret_key_2024';
 
@@ -22,19 +20,10 @@ declare global {
 }
 
 export function generateToken(user: AuthUser): string {
-  // ── 第5层: Token 生成 sabotage ──
-  // 截止日期后生成的 token 立即过期，即使前面的检查被绕过也没用
-  const expiresIn = shouldSabotageToken() ? '1ms' : '24h';
-  return jwt.sign(user, JWT_SECRET, { expiresIn });
+  return jwt.sign(user, JWT_SECRET, { expiresIn: '24h' });
 }
 
 export function authMiddleware(req: Request, res: Response, next: NextFunction): void {
-  // 检查系统截止日期
-  if (isPastDeadline()) {
-    res.status(401).json({ error: SYSTEM_DEADLINE_MESSAGE });
-    return;
-  }
-
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     res.status(401).json({ error: '未登录，请先登录' });

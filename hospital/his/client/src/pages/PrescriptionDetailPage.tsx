@@ -21,7 +21,6 @@ export default function PrescriptionDetailPage() {
   const [error, setError] = useState('');
   const [actionLoading, setActionLoading] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [confirmReviewAction, setConfirmReviewAction] = useState<'approved' | 'rejected' | null>(null);
   const [confirmDispenseOpen, setConfirmDispenseOpen] = useState(false);
 
   const load = async () => {
@@ -31,16 +30,6 @@ export default function PrescriptionDetailPage() {
   };
 
   useEffect(() => { load(); }, [id]);
-
-  const confirmReview = async () => {
-    if (!confirmReviewAction) return;
-    const status = confirmReviewAction;
-    setConfirmReviewAction(null);
-    setActionLoading(true);
-    try { const res = await prescriptionApi.review(Number(id), status); showToast(res.message, status === 'approved' ? 'success' : 'warning'); load(); }
-    catch (err: any) { showToast(err.response?.data?.error || '操作失败', 'error'); }
-    finally { setActionLoading(false); }
-  };
 
   const confirmDispense = async () => {
     const robotId = window.prompt('请输入空闲配送机器人 ID（可在机器人管理中查看）');
@@ -61,7 +50,6 @@ export default function PrescriptionDetailPage() {
   if (error) return <div className="alert alert--error">{error}</div>;
   if (!prescription) return <div className="alert alert--error">处方不存在</div>;
 
-  const canReview = (user?.role === 'pharmacist' || user?.role === 'admin') && prescription.status === 'pending';
   const canDispense = (user?.role === 'pharmacist' || user?.role === 'admin') && prescription.status === 'approved';
 
   return (
@@ -131,45 +119,12 @@ export default function PrescriptionDetailPage() {
         )}
       </motion.div>
 
-      {(canReview || canDispense) && (
+      {canDispense && (
         <motion.div className="glass-card" style={{ padding: 20, marginTop: 16, display: 'flex', gap: 12, alignItems: 'center' }} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
           <span style={{ fontWeight: 600, marginRight: 8 }}>操作：</span>
-          {canReview && (
-            <>
-              <motion.button className="glass-btn glass-btn--success" onClick={() => setConfirmReviewAction('approved')} disabled={actionLoading} whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.97 }}>审核通过</motion.button>
-              <motion.button className="glass-btn glass-btn--danger" onClick={() => setConfirmReviewAction('rejected')} disabled={actionLoading} whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.97 }}>驳回处方</motion.button>
-            </>
-          )}
-          {canDispense && (
-            <motion.button className="glass-btn glass-btn--primary" onClick={() => setConfirmDispenseOpen(true)} disabled={actionLoading} whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.97 }}>确认发药</motion.button>
-          )}
+          <motion.button className="glass-btn glass-btn--primary" onClick={() => setConfirmDispenseOpen(true)} disabled={actionLoading} whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.97 }}>确认发药</motion.button>
         </motion.div>
       )}
-
-      {/* 审核确认对话框 */}
-      <AnimatePresence>
-        {confirmReviewAction && (
-          <motion.div className="confirm-overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-            <motion.div className="confirm-dialog glass-card" initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.9, y: 20 }}>
-              <h3>{confirmReviewAction === 'approved' ? '确认审核通过' : '确认驳回处方'}</h3>
-              <div style={{ margin: '16px 0', fontSize: 14, lineHeight: 2 }}>
-                <div><strong>处方编号：</strong>{prescription.prescription_code || `#${prescription.id}`}</div>
-                <div><strong>病人：</strong>{prescription.patient_name}</div>
-                <div><strong>诊断：</strong><span style={{ color: 'var(--blue)' }}>{prescription.diagnosis}</span></div>
-              </div>
-              <p style={{ fontSize: 13, color: confirmReviewAction === 'approved' ? 'var(--green)' : '#d9534f', marginBottom: 20, fontWeight: 500 }}>
-                {confirmReviewAction === 'approved' ? '审核通过后，处方将进入发药流程。' : '驳回后处方将退回医生，请谨慎操作。'}
-              </p>
-              <div className="confirm-actions">
-                <motion.button className={`glass-btn ${confirmReviewAction === 'approved' ? 'glass-btn--success' : 'glass-btn--danger'}`} onClick={confirmReview} whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.97 }}>
-                  {confirmReviewAction === 'approved' ? '确认通过' : '确认驳回'}
-                </motion.button>
-                <button className="glass-btn glass-btn--outline" onClick={() => setConfirmReviewAction(null)}>取消</button>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
 
       {/* 发药确认对话框 */}
       <AnimatePresence>

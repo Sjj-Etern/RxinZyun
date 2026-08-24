@@ -387,7 +387,6 @@ export default function MedicinePage() {
                                     <tr>
                                       <th style={{ width: '20%' }}>追溯码</th>
                                       <th style={{ width: '8%' }}>状态</th>
-                                      <th style={{ width: '14%', textAlign: 'center' }}>识别时间</th>
                                       <th style={{ width: '14%', textAlign: 'center' }}>出库时间</th>
                                       <th style={{ width: '14%', textAlign: 'center' }}>确认时间</th>
                                       <th style={{ width: '22%', textAlign: 'center' }}>操作</th>
@@ -406,13 +405,12 @@ export default function MedicinePage() {
                                             {TRACE_STATUS_LABELS[tc.status]}
                                           </span>
                                         </td>
-                                        <td style={{ fontSize: 12, textAlign: 'center' }}>{formatDateTime(tc.scan1_time)}</td>
                                         <td style={{ fontSize: 12, textAlign: 'center' }}>{formatDateTime(tc.scan2_time)}</td>
                                         <td style={{ fontSize: 12, textAlign: 'center' }}>{formatDateTime(tc.scan3_time)}</td>
                                         <td style={{ textAlign: 'center' }}>
                                           <div className="action-btns" style={{ flexWrap: 'nowrap', justifyContent: 'center' }}>
-                                            <motion.button className="glass-btn glass-btn--outline glass-btn--xs" onClick={() => setTraceConfirm({ type: 'scan', tcId: tc.id, label: tc.status === 'pending' ? '识别' : tc.status === 'scanned_identify' ? '出库' : '确认' })} disabled={tc.status === 'scanned_confirm' || isBusy(tc.id)} whileHover={tc.status === 'scanned_confirm' || isBusy(tc.id) ? {} : { scale: 1.05 }} whileTap={tc.status === 'scanned_confirm' || isBusy(tc.id) ? {} : { scale: 0.95 }}>
-                                              {tc.status === 'pending' ? '识别' : tc.status === 'scanned_identify' ? '出库' : tc.status === 'scanned_outbound' ? '确认' : '完成'}
+                                            <motion.button className="glass-btn glass-btn--outline glass-btn--xs" onClick={() => setTraceConfirm({ type: 'scan', tcId: tc.id, label: tc.status === 'pending' ? '出库' : '确认' })} disabled={tc.status === 'scanned_confirm' || isBusy(tc.id)} whileHover={tc.status === 'scanned_confirm' || isBusy(tc.id) ? {} : { scale: 1.05 }} whileTap={tc.status === 'scanned_confirm' || isBusy(tc.id) ? {} : { scale: 0.95 }}>
+                                              {tc.status === 'pending' ? '出库' : tc.status === 'scanned_outbound' ? '确认' : '完成'}
                                             </motion.button>
                                             {tc.status !== 'pending' && (
                                               <motion.button className="glass-btn glass-btn--success glass-btn--xs" onClick={() => setTraceConfirm({ type: 'unscan', tcId: tc.id, label: '撤回' })} disabled={isBusy(tc.id)} whileHover={isBusy(tc.id) ? {} : { scale: 1.05 }} whileTap={isBusy(tc.id) ? {} : { scale: 0.95 }}>撤回</motion.button>

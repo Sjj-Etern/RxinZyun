@@ -11,7 +11,7 @@
 ```
                  ┌──────────────┐   HTTP/MySQL    ┌──────────────────────────┐
  药师扫码 ─────▶ │  HIS         │ ──────────────▶ │  医院大屏后端 (FastAPI)    │
-  (his/client)   │  (Express+TS)│  共享 hospital  │  - 工作流编排             │
+  (hospital/his/client) │ (Express+TS)│ 共享 hospital │ - 工作流编排          │
                  └──────────────┘   数据库         │  - 车1/车2 ROS 通信        │
                                                      │  - 电梯 TCP 控制          │
                ┌──────────────────┐                  │  - 摄像头/语音            │
@@ -22,8 +22,8 @@
             ▼                                  ▼                            ▼
    ┌─────────────────┐              ┌──────────────────┐          ┌──────────────────┐
    │ 1 号小车 (ROS)   │  WebSocket   │ 2 号小车 (ROS)    │  TCP     │ ESP32 电梯门禁    │
-   │ 192.168.51.16    │ ◀──────────▶ │ 192.168.51.43    │ ◀──────▶ │ (Elevator_Access  │
-   │ :9090 rosbridge  │              │ :9090 rosbridge  │  10833   │  Control)        │
+   │ 192.168.51.16    │ ◀──────────▶ │ 192.168.51.43    │ ◀──────▶ │ (elevator_access  │
+   │ :9090 rosbridge  │              │ :9090 rosbridge  │  10833   │  _control)       │
    └─────────────────┘              └──────────────────┘          └──────────────────┘
 ```
 
@@ -36,32 +36,32 @@
 
 ## 子项目清单
 
-### 1. `his` — HIS 系统（药师端）
+### 1. `hospital/his` — HIS 系统（药师端）
 药师信息系统的后端 + 扫码前端。
 
-- **`his/server`** — HIS 后端
+- **`hospital/his/server`** — HIS 后端
   - 技术栈：Node.js + Express + TypeScript + MySQL2 + JWT + bcrypt
   - 职责：处方/药品/追溯码管理、扫码状态机（pending → scanned_outbound → scanned_confirm）、节点 3 扫码复核完成检测并通知大屏后端触发 `pharmacist-success`。
   - 启动：
     ```bash
-    cd his/server
+    cd hospital/his/server
     npm install
-    npm run dev      # tsx watch，默认 :8000
+    npm run dev      # tsx watch，默认 :3001
     # 或 npm run build && npm start
     ```
   - 注：服务端带 `.integrity` 源码完整性校验，修改源码后需运行 `node scripts/generate-checksums.js <密码>` 重新生成校验清单。
 
-- **`his/client`** — HIS 扫码前端
+- **`hospital/his/client`** — HIS 扫码前端
   - 技术栈：React 18 + Vite + TypeScript + html5-qrcode + echarts
   - 职责：摄像头扫码核验、药品追溯码出库/确认、操作记录展示。
   - 启动：
     ```bash
-    cd his/client
+    cd hospital/his/client
     npm install
-    npm run dev      # Vite，默认 :5173
+    npm run dev      # Vite，默认 :3002
     ```
 
-### 2. `hospital_new_demo_back-test` — 医院大屏后端
+### 2. `hospital_dashboard_backend` — 医院大屏后端
 系统核心编排服务。
 
 - 技术栈：Python + FastAPI + Uvicorn + pymysql + websockets
@@ -73,42 +73,42 @@
   - 摄像头语音播报（ISAPI）。
 - 启动：
   ```bash
-  cd hospital_new_demo_back-test
+  cd hospital_dashboard_backend
   pip install -r requirements.txt   # FastAPI/uvicorn/pymysql/websockets/pydantic-settings 等
   python app.py                      # 默认 :8080
   ```
 - 配置：`.env`（**已排除上传**，参考 `.env.example`），含 MySQL、ROS、电梯、摄像头、延迟参数等。
 
-### 3. `hospital_new_demo_front` — 医院大屏前端
+### 3. `hospital_dashboard_frontend` — 医院大屏前端
 医院大屏实时监控界面。
 
 - 技术栈：Vue 3 + Vite + TypeScript
 - 职责：实时场景图、摄像头视频流（优先实时、本地兜底）、工作流节点进度、处方运输状态展示。
 - 启动：
   ```bash
-  cd hospital_new_demo_front
+  cd hospital_dashboard_frontend
   npm install
   npm run dev      # Vite，默认 :5173
   ```
 
-### 4. `DHT11_WebSocket` — ESP32 温湿度采集
+### 4. `temperature_humidity_sensor` — ESP32 温湿度采集
 环境温湿度采集并通过 WebSocket 上报。
 
 - 技术栈：ESP-IDF（C），目标芯片 ESP32-S3（正点原子开发板）
-- 目录：`DHT11_WebSocket/dht11_demo/`（`main/main.c`、`wifi.c/h`、`ws_client.c/h`、`app_config.h`）
+- 目录：`temperature_humidity_sensor/dht11_demo/`（`main/main.c`、`wifi.c/h`、`ws_client.c/h`、`app_config.h`）
 - 职责：连接 WiFi → 读取 DHT11 温湿度 → 经 WebSocket 客户端上报。
 - 编译烧录（需 ESP-IDF v5.5.5）：
   ```bash
-  cd DHT11_WebSocket/dht11_demo
+  cd temperature_humidity_sensor/dht11_demo
   idf.py build
   idf.py -p COMx flash monitor
   ```
 
-### 5. `Elevator_AccessControl` — ESP32 电梯门禁
+### 5. `elevator_access_control` — ESP32 电梯门禁
 电梯楼层控制与门禁。
 
 - 技术栈：ESP-IDF（C），目标芯片 ESP32-S3（QFN56）
-- 目录：`Elevator_AccessControl/main/main.c` + `components/`、`CMakeLists.txt`、`partitions-16MiB.csv`、`sdkconfig`
+- 目录：`elevator_access_control/main/main.c` + `components/`、`CMakeLists.txt`、`partitions-16MiB.csv`、`sdkconfig`
 - 职责：
   - UDP :10832 服务发现，TCP :10833 客户端自动重连（5 秒）；
   - 解析后端 JSON 命令（`open_door` / `close_door` / `go_floor` / `status`，含 `seq` 字段）；
@@ -116,7 +116,7 @@
   - 全命令 SEND/RECV/ACK/DONE 日志，`go_floor` 先回 ACK 再异步执行（避免阻塞 TCP）。
 - 编译烧录（需 ESP-IDF v5.5.5）：
   ```bash
-  cd Elevator_AccessControl
+  cd elevator_access_control
   idf.py build
   idf.py -p COM3 flash monitor
   ```
@@ -139,9 +139,9 @@
 
 | 服务 | 地址/端口 |
 | --- | --- |
-| HIS 后端 | :8000 |
+| HIS 后端 | :3001 |
 | 大屏后端 | :8080 |
-| 大屏/HIS 前端 | Vite 默认 :5173 |
+| HIS 前端 | Vite 默认 :3002 |
 | 车 1 / 车 2 ROS | 192.168.51.16 / .43 :9090 |
 | 电梯 ESP32 TCP | :10833（后端为服务端） |
 | 电梯 ESP32 UDP 发现 | :10832 |
@@ -150,8 +150,8 @@
 
 ## 配置与敏感文件说明
 
-- 各项目的 `.env` 文件含数据库密码、摄像头密码、内网 IP 等敏感信息，**已通过 `.gitignore` 排除上传**；模板见 `hospital_new_demo_back-test/.env.example`。
-- `his/client` 的 `cert.pem` / `key.pem`（开发用 HTTPS 证书/私钥）同样已排除。
+- 各项目的 `.env` 文件含数据库密码、摄像头密码、内网 IP 等敏感信息，**已通过 `.gitignore` 排除上传**；模板见 `hospital_dashboard_backend/.env.example`。
+- `hospital/his/client` 的 `cert.pem` / `key.pem`（开发用 HTTPS 证书/私钥）同样已排除。
 - 关键延迟/间隔参数均可于后端 `.env` 统一配置，例如：
   - `LIFT_ACROSS_DELAY`：电梯到达后发送跨楼信号延迟（秒）
   - `CAR2_SIGNAL_INTERVAL`：车 2 信号连续发送重发间隔（秒）
@@ -161,5 +161,6 @@
 
 ## 分支说明
 
-- `main`：仓库历史旧版（旧目录结构，保留不动）。
-- `Combination_hospital`：本组合上传分支，包含上述 5 个子项目的最新版本。
+- `main`：已合并 `new_sjj` 与 `Combination_hospital`，作为当前统一主分支。
+- `new_sjj`：HIS、旧版大屏、移动端和 ROS 辅助程序等历史项目线。
+- `Combination_hospital`：包含 HIS、新版大屏后端/前端、DHT11 WebSocket 和电梯门禁的组合项目线。

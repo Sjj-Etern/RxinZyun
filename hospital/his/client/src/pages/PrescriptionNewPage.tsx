@@ -266,8 +266,21 @@ export default function PrescriptionNewPage() {
           ({ medicine_id, trace_code, drug_form, dosage, usage_method, frequency, days, quantity, note })),
       });
       localStorage.removeItem(DRAFT_KEY);
-      showToast(res.message || '处方已提交，等待药师审核', 'success');
-      navigate(`/prescriptions/${res.id}`);
+      setPrescriptionType('普通');
+      setPaymentType('医保');
+      setMedicalRecordNo('');
+      setDepartment('');
+      setBedNo('');
+      setSelectedPatient(null);
+      setDiagnosis('');
+      setNote('');
+      setItems([]);
+      setPatientSearch('');
+      setPatients([]);
+      setMedSearch('');
+      setMedicines([]);
+      showToast(res.message || '处方已创建，已进入可发药状态', 'success');
+      navigate('/prescriptions/new', { replace: true });
     } catch (err: any) { setError(err.response?.data?.error || '提交失败'); }
     finally { setSubmitting(false); }
   };

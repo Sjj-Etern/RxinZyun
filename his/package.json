@@ -1,8 +1,0 @@
-{
-  "scripts": {
-    "start:his": "bash ./start-his.sh"
-  },
-  "dependencies": {
-    "html5-qrcode": "^2.3.8"
-  }
-}

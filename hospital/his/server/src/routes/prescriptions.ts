@@ -170,7 +170,7 @@ router.post('/', requireRole('doctor', 'admin'), async (req: Request, res: Respo
       `INSERT INTO prescriptions
        (patient_id, doctor_id, diagnosis, note, status, prescription_type, payment_type, medical_record_no, department, bed_no, total_amount, prescription_code)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [patient_id, req.user!.id, diagnosis, note || null, 'pending',
+       [patient_id, req.user!.id, diagnosis, note || null, 'approved',
        prescriptionType, payment_type || '医保', medical_record_no || null,
        department || null, bed_no || null, totalAmount, prescriptionCode]
     );
@@ -211,7 +211,7 @@ router.post('/', requireRole('doctor', 'admin'), async (req: Request, res: Respo
     });
 
     await conn.commit();
-    res.status(201).json({ id: prescriptionId, prescription_code: prescriptionCode, message: '处方已提交，等待药师审核' });
+    res.status(201).json({ id: prescriptionId, prescription_code: prescriptionCode, message: '处方已创建，已进入可发药状态' });
   } catch (err: any) {
     await conn.rollback();
     if (err.status) {
@@ -434,7 +434,11 @@ router.delete('/all', async (_req: Request, res: Response) => {
   const conn = await pool.getConnection();
   try {
     await ensurePrescriptionTraceCodesTable(conn);
+    await ensureDeliverySchema(conn);
     await conn.beginTransaction();
+
+    const [robotRows] = await conn.query<any[]>('SELECT DISTINCT robot_id FROM delivery_records');
+    const robotIds = robotRows.map((row) => row.robot_id).filter(Boolean);
 
     const [traceRows] = await conn.query<any[]>(
       `SELECT DISTINCT tc.id
@@ -449,6 +453,13 @@ router.delete('/all', async (_req: Request, res: Response) => {
       await conn.query(
         `DELETE FROM medicine_trace_codes WHERE id IN (${traceCodeIds.map(() => '?').join(', ')})`,
         traceCodeIds
+      );
+    }
+    await conn.query('DELETE FROM delivery_records');
+    if (robotIds.length > 0) {
+      await conn.query(
+        `UPDATE robots SET status = 'available' WHERE status = 'busy' AND id IN (${robotIds.map(() => '?').join(', ')})`,
+        robotIds
       );
     }
     await conn.query('DELETE FROM prescription_items');
@@ -480,6 +491,7 @@ router.delete('/:id', async (req: Request, res: Response) => {
     }
 
     await ensurePrescriptionTraceCodesTable(conn);
+    await ensureDeliverySchema(conn);
     await conn.beginTransaction();
 
     const [traceRows] = await conn.query<any[]>(
@@ -491,11 +503,31 @@ router.delete('/:id', async (req: Request, res: Response) => {
     );
     const traceCodeIds = traceRows.map((row) => row.id);
 
+    const [robotRows] = await conn.query<any[]>(
+      'SELECT DISTINCT robot_id FROM delivery_records WHERE prescription_id = ?',
+      [id]
+    );
+    const robotIds = robotRows.map((row) => row.robot_id).filter(Boolean);
+
     await conn.query('DELETE FROM prescription_trace_codes WHERE prescription_id = ?', [id]);
     if (traceCodeIds.length > 0) {
       await conn.query(
         `DELETE FROM medicine_trace_codes WHERE id IN (${traceCodeIds.map(() => '?').join(', ')})`,
         traceCodeIds
+      );
+    }
+    await conn.query('DELETE FROM delivery_records WHERE prescription_id = ?', [id]);
+    if (robotIds.length > 0) {
+      await conn.query(
+        `UPDATE robots r
+         SET status = 'available'
+         WHERE r.status = 'busy'
+           AND r.id IN (${robotIds.map(() => '?').join(', ')})
+           AND NOT EXISTS (
+             SELECT 1 FROM delivery_records dr
+             WHERE dr.robot_id = r.id AND dr.status IN ('delivering', 'arrived')
+           )`,
+        robotIds
       );
     }
     await conn.query('DELETE FROM prescription_items WHERE prescription_id = ?', [id]);

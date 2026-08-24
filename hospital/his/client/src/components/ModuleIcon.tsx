@@ -7,6 +7,7 @@ export type ModuleIconName =
   | 'review'
   | 'medicines'
   | 'scan'
+  | 'scannerGun'
   | 'pending'
   | 'medicineTotal'
   | 'patientTotal';
@@ -152,6 +153,15 @@ function renderGlyph(name: Props['name'], accent: string) {
           <path d="M24 22l3-5h10l3 5" stroke={line} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
           <circle cx="32" cy="34" r="7" fill="white" fillOpacity="0.92" />
           <circle cx="32" cy="34" r="3.2" fill={blue} />
+        </>
+      );
+    case 'scannerGun':
+      return (
+        <>
+          <rect x="16" y="15" width="30" height="19" rx="6" fill={accent} />
+          <path d="M21 22h20M21 27h14" stroke="white" strokeWidth="2.5" strokeLinecap="round" />
+          <path d="M37 34l-3 15h-9l4-15" fill={line} />
+          <path d="M43 18l5-5M48 23h6M46 29l5 4" stroke={blue} strokeWidth="2.5" strokeLinecap="round" />
         </>
       );
     default:

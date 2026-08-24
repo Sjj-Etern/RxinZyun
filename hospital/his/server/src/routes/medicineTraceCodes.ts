@@ -1,4 +1,6 @@
 import { Router, Request, Response } from 'express';
+import http from 'http';
+import https from 'https';
 import pool from '../db';
 import { authMiddleware } from '../middleware/auth';
 import { appendAuditRecord } from '../services/auditChain';
@@ -101,7 +103,7 @@ const validatePrescriptionLink = (record: any, prescriptionId: number | null, re
   const linkedPrescriptionId = record.prescription_id ? Number(record.prescription_id) : null;
 
   if (!linkedPrescriptionId) {
-    res.status(400).json({ error: '该追溯码未关联处方，不能扫码' });
+    res.status(400).json({ error: '本药品未开处方' });
     return false;
   }
 
@@ -159,11 +161,6 @@ const findTraceCodeByInput = async (traceCodeInput: unknown) => {
   return rows[0] || null;
 };
 
-const getNormalizedTraceCode = (traceCodeInput: unknown) => {
-  const candidates = getTraceCodeCandidates(traceCodeInput);
-  return candidates.find((candidate) => /^\d{7,}$/.test(candidate)) || candidates[0] || '';
-};
-
 const findTraceCodeByInputForUpdate = async (conn: any, traceCodeInput: unknown) => {
   const candidates = getTraceCodeCandidates(traceCodeInput);
   if (candidates.length === 0) return null;
@@ -182,56 +179,66 @@ const findTraceCodeByInputForUpdate = async (conn: any, traceCodeInput: unknown)
   return rows[0] || null;
 };
 
-const createOtherMedicine = async (conn: any, prefix: string) => {
-  const [result] = await conn.query(
-    `INSERT INTO medicines
-     (name, generic_name, specification, drug_form, manufacturer, unit, price, stock, category, is_narcotic, image_url)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ['其他', '其他', null, null, null, '盒', 0, 1, '处方药', 0, null]
-  );
-  const medicineId = result.insertId;
-  await conn.query(
-    'INSERT INTO medicine_trace_prefixes (medicine_id, prefix) VALUES (?, ?)',
-    [medicineId, prefix]
-  );
-  return medicineId;
-};
+// 节点3扫码复核完成后通知医院大屏后端，触发车2继续配送。
+// 节点3对应所有追溯码第一次实际扫码完成（scan2_time / scanned_outbound）。
+function notifyBackendNode3Completed(prescriptionCode: string): void {
+  const base = process.env.HOSPITAL_BACKEND_URL || 'http://127.0.0.1:8080/api/v1';
+  const target = new URL(`${base}/workflow/pharmacist-success-trigger`);
+  const body = JSON.stringify({ prescription_code: prescriptionCode });
+  const transport = target.protocol === 'https:' ? https : http;
+  const req = transport.request({
+    hostname: target.hostname,
+    port: Number(target.port) || (target.protocol === 'https:' ? 443 : 80),
+    path: target.pathname + target.search,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+    timeout: 5000,
+  }, (response) => {
+    let raw = '';
+    response.setEncoding('utf8');
+    response.on('data', (chunk) => { raw += chunk; });
+    response.on('end', () => {
+      console.log(`[节点3完成通知] 大屏后端响应 ${response.statusCode}: ${raw}`);
+    });
+  });
+  req.on('error', (error) => console.error(`[节点3完成通知] 通知大屏后端失败: ${error.message}`));
+  req.on('timeout', () => {
+    req.destroy();
+    console.error('[节点3完成通知] 通知大屏后端超时');
+  });
+  req.write(body);
+  req.end();
+}
 
-const ensureTraceCodeRecordForScan = async (conn: any, traceCodeInput: unknown) => {
-  const existing = await findTraceCodeByInputForUpdate(conn, traceCodeInput);
-  if (existing) return { record: existing, created: false };
+async function checkNode3CompletedAndNotify(conn: any, prescriptionId: number | null): Promise<void> {
+  if (!prescriptionId) return;
 
-  const traceCode = getNormalizedTraceCode(traceCodeInput);
-  if (!/^\d{7,}$/.test(traceCode)) {
-    throw Object.assign(new Error('追溯码至少需要包含7位数字'), { status: 400 });
+  try {
+    const [countRows] = await conn.query(
+      `SELECT COUNT(*) AS total,
+              SUM(CASE WHEN status = 'scanned_outbound' THEN 1 ELSE 0 END) AS outbound
+       FROM medicine_trace_codes
+       WHERE prescription_id = ?`,
+      [prescriptionId]
+    );
+    const total = Number(countRows[0]?.total || 0);
+    const outbound = Number(countRows[0]?.outbound || 0);
+    if (total === 0 || outbound !== total) return;
+
+    const [prescriptionRows] = await conn.query(
+      'SELECT prescription_code FROM prescriptions WHERE id = ?',
+      [prescriptionId]
+    );
+    const prescriptionCode = prescriptionRows[0]?.prescription_code;
+    if (!prescriptionCode) return;
+
+    console.log(`[节点3完成] 处方 ${prescriptionCode} 全部追溯码已完成第一次扫码（${total} 条），通知大屏后端`);
+    notifyBackendNode3Completed(prescriptionCode);
+  } catch (error: any) {
+    // 回调失败不回滚已完成的扫码，避免大屏暂时不可用阻塞 HIS。
+    console.error(`[节点3完成] 检查或通知失败: ${error.message}`);
   }
-
-  const prefix = traceCode.slice(0, 7);
-  const [prefixRows] = await conn.query(
-    `SELECT p.medicine_id
-     FROM medicine_trace_prefixes p
-     WHERE p.prefix = ?
-     LIMIT 1
-     FOR UPDATE`,
-    [prefix]
-  );
-
-  const medicineId = prefixRows.length > 0
-    ? prefixRows[0].medicine_id
-    : await createOtherMedicine(conn, prefix);
-
-  if (prefixRows.length > 0) {
-    await conn.query('UPDATE medicines SET stock = COALESCE(stock, 0) + 1 WHERE id = ?', [medicineId]);
-  }
-
-  await conn.query(
-    'INSERT INTO medicine_trace_codes (medicine_id, trace_code) VALUES (?, ?)',
-    [medicineId, traceCode]
-  );
-
-  const record = await findTraceCodeByInputForUpdate(conn, traceCode);
-  return { record, created: true };
-};
+}
 
 // POST /api/medicine-trace-codes — create user's code, then auto-generate remaining based on stock
 router.post('/', async (req: Request, res: Response) => {
@@ -568,10 +575,8 @@ router.put('/:id/scan', async (req: Request, res: Response) => {
     const updateParams: any[] = [];
     let auditEventType: 'DRUG_OUTBOUND' | 'NURSE_RECEIVED' | null = null;
 
-    if (currentStatus === 'pending') {
-      updateSql = 'UPDATE medicine_trace_codes SET status = ?, scan1_time = NOW(), scan1_user_id = ?, prescription_id = COALESCE(?, prescription_id) WHERE id = ?';
-      updateParams.push('scanned_identify', userId, prescriptionId, id);
-    } else if (currentStatus === 'scanned_identify') {
+    if (currentStatus === 'pending' || currentStatus === 'scanned_identify') {
+      // 两次实际扫码：第一次出库（节点3），第二次确认（节点4）。
       updateSql = 'UPDATE medicine_trace_codes SET status = ?, scan2_time = NOW(), scan2_user_id = ?, prescription_id = COALESCE(?, prescription_id) WHERE id = ?';
       updateParams.push('scanned_outbound', userId, prescriptionId, id);
       auditEventType = 'DRUG_OUTBOUND';
@@ -610,6 +615,12 @@ router.put('/:id/scan', async (req: Request, res: Response) => {
     );
 
     await conn.commit();
+
+    // 第一次实际扫码完成整张处方后，通知大屏后端触发车2 pharmacist-success。
+    if (currentStatus === 'pending' || currentStatus === 'scanned_identify') {
+      await checkNode3CompletedAndNotify(conn, prescriptionId || record.prescription_id);
+    }
+
     res.json(updated[0]);
   } catch (err: any) {
     await conn.rollback();
@@ -642,7 +653,7 @@ router.put('/:id/unscan', async (req: Request, res: Response) => {
       updateParams.push('scanned_outbound', id);
     } else if (currentStatus === 'scanned_outbound') {
       updateSql = 'UPDATE medicine_trace_codes SET status = ?, scan2_time = NULL, scan2_user_id = NULL WHERE id = ?';
-      updateParams.push('scanned_identify', id);
+      updateParams.push('pending', id);
     } else if (currentStatus === 'scanned_identify') {
       updateSql = 'UPDATE medicine_trace_codes SET status = ?, scan1_time = NULL, scan1_user_id = NULL WHERE id = ?';
       updateParams.push('pending', id);
@@ -682,29 +693,16 @@ router.post('/scan-by-code', async (req: Request, res: Response) => {
     await conn.beginTransaction();
 
     const userId = (req as any).user?.id;
-    const { record, created } = await ensureTraceCodeRecordForScan(conn, trace_code);
+    const record = await findTraceCodeByInputForUpdate(conn, trace_code);
     if (!record) {
       await conn.rollback();
-      res.status(404).json({ error: '追溯码未找到' });
+      res.status(400).json({ error: '本药品未开处方' });
       return;
     }
 
-    if (created) {
-      await appendAuditRecord(conn, {
-        eventType: 'DRUG_INBOUND',
-        entityType: 'trace_code',
-        entityId: record.id,
-        flowStatus: 'inbound',
-        traceCode: record.trace_code,
-        operatorId: userId,
-      });
-      await conn.commit();
-      res.json({
-        ...record,
-        action: '录入',
-        completed: false,
-        created,
-      });
+    if (!record.prescription_id) {
+      await conn.rollback();
+      res.status(400).json({ error: '本药品未开处方' });
       return;
     }
 
@@ -714,11 +712,7 @@ router.post('/scan-by-code', async (req: Request, res: Response) => {
     let actionName: string;
     let auditEventType: 'DRUG_OUTBOUND' | 'NURSE_RECEIVED' | null = null;
 
-    if (record.status === 'pending') {
-      updateSql = 'UPDATE medicine_trace_codes SET status = ?, scan1_time = NOW(), scan1_user_id = ? WHERE id = ?';
-      updateParams.push('scanned_identify', userId, record.id);
-      actionName = '识别';
-    } else if (record.status === 'scanned_identify') {
+    if (record.status === 'pending' || record.status === 'scanned_identify') {
       updateSql = 'UPDATE medicine_trace_codes SET status = ?, scan2_time = NOW(), scan2_user_id = ? WHERE id = ?';
       updateParams.push('scanned_outbound', userId, record.id);
       actionName = '出库';
@@ -729,13 +723,8 @@ router.post('/scan-by-code', async (req: Request, res: Response) => {
       actionName = '确认';
       auditEventType = 'NURSE_RECEIVED';
     } else {
-      await conn.commit();
-      res.json({
-        message: '该追溯码已完成全部扫描',
-        status: record.status,
-        completed: true,
-        created,
-      });
+      await conn.rollback();
+      res.status(400).json({ error: '本药品已出库，无法再次扫码', status: record.status, completed: true });
       return;
     }
 
@@ -767,11 +756,15 @@ router.post('/scan-by-code', async (req: Request, res: Response) => {
 
     await conn.commit();
 
+    // 第一次实际扫码完成整张处方后，通知大屏后端触发车2 pharmacist-success。
+    if (record.status === 'pending' || record.status === 'scanned_identify') {
+      await checkNode3CompletedAndNotify(conn, record.prescription_id);
+    }
+
     res.json({
       ...updated[0],
       action: actionName,
       completed: actionName === '确认',
-      created,
     });
   } catch (err: any) {
     await conn.rollback();

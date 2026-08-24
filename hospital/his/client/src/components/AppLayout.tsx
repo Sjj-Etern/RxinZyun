@@ -25,21 +25,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     return () => clearInterval(t);
   }, []);
 
-  // ── 第7层: 前端定时轮询检查 ──
-  useEffect(() => {
-    const check = () => {
-      const d = new Date();
-      const v = d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
-      if (v > 20261231) {
-        logout();
-        navigate('/login');
-      }
-    };
-    const t = setInterval(check, 30000);
-    check(); // 挂载时立刻检查一次
-    return () => clearInterval(t);
-  }, [logout, navigate]);
-
   const fmt = (d:Date) => {
     const y=d.getFullYear(), m=String(d.getMonth()+1).padStart(2,'0'), da=String(d.getDate()).padStart(2,'0');
     const h=String(d.getHours()).padStart(2,'0'), mi=String(d.getMinutes()).padStart(2,'0'), s=String(d.getSeconds()).padStart(2,'0');
@@ -49,7 +34,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const allTabs: TabItem[] = [
     { to:'/dashboard', icon:'dashboard', label:'工作版' },
     { to:'/prescriptions/new', icon:'prescriptionNew', label:'开具处方', roles:['doctor','admin'] },
-    { to:'/review', icon:'review', label:'处方审核', roles:['pharmacist','admin'] },
+    { to:'/scan', icon:'scannerGun', label:'出库追溯' },
     { to:'/dispense-management', icon:'patients', label:'发药管理' },
     { to:'/medicines', icon:'medicines', label:'药品管理' },
   ];
@@ -85,18 +70,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       {/* Toast notifications */}
       <ToastContainer />
 
-      {/* Floating scan button */}
-      <motion.button
-        onClick={() => navigate('/scan')}
-        className="scan-fab"
-        whileHover={{ scale: 1.08 }}
-        whileTap={{ scale: 0.92 }}
-        initial={{ scale: 0, opacity: 0 }}
-        animate={{ scale: 1, opacity: 1 }}
-        transition={{ delay: 0.5, type: 'spring', stiffness: 300 }}
-      >
-        <ModuleIcon name="scan" size={42} />
-      </motion.button>
     </div>
   );
 }

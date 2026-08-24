@@ -194,9 +194,6 @@ export const prescriptionApi = {
   create: (data: PrescriptionFormData) =>
     api.post('/prescriptions', data).then((r) => r.data),
 
-  review: (id: number, status: 'approved' | 'rejected', note?: string) =>
-    api.put(`/prescriptions/${id}/review`, { status, note }).then((r) => r.data),
-
   dispense: (id: number) =>
     api.put(`/prescriptions/${id}/dispense`).then((r) => r.data),
 

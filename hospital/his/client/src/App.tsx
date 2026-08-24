@@ -7,7 +7,6 @@ import PatientDetailPage from './pages/PatientDetailPage';
 import PrescriptionListPage from './pages/PrescriptionListPage';
 import PrescriptionNewPage from './pages/PrescriptionNewPage';
 import PrescriptionDetailPage from './pages/PrescriptionDetailPage';
-import ReviewPage from './pages/ReviewPage';
 import MedicinePage from './pages/MedicinePage';
 import MedicineLocationsPage from './pages/MedicineLocationsPage';
 import ScanPage from './pages/ScanPage';
@@ -36,22 +35,6 @@ function MobileOnly({ children }: { children: React.ReactNode }) {
 function PrivateRoute({ children, roles, noLayout }: { children: React.ReactNode; roles?: string[]; noLayout?: boolean }) {
   const { user, loading } = useAuth();
 
-  // ── 第6层: 前端初始化截止日期检查 ──
-  // 即使后端保护被绕过，前端自身也会拦截
-  const d = new Date();
-  if (d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate() > 20261231) {
-    return (
-      <div style={{
-        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-        height: '100vh', color: '#1E293B', fontFamily: 'sans-serif',
-        background: 'linear-gradient(120deg, #eaf6ff 0%, #edfdf8 44%, #fff2f7 100%)',
-      }}>
-        <div className="glass-icon-mark" style={{ marginBottom: 20 }}>!</div>
-        <h2 style={{ margin: 0, fontSize: 22, fontWeight: 500 }}>系统已停止服务</h2>
-      </div>
-    );
-  }
-
   if (loading) return <div className="loading">...</div>;
   if (!user) return <Navigate to="/login" replace />;
   if (roles && !roles.includes(user.role)) return <Navigate to="/dashboard" replace />;
@@ -74,8 +57,7 @@ export default function App() {
       <Route path="/prescriptions" element={<PrivateRoute><PrescriptionListPage /></PrivateRoute>} />
       <Route path="/prescriptions/new" element={<PrivateRoute roles={['doctor','admin']}><PrescriptionNewPage /></PrivateRoute>} />
       <Route path="/prescriptions/:id" element={<PrivateRoute><PrescriptionDetailPage /></PrivateRoute>} />
-      <Route path="/review" element={<PrivateRoute roles={['pharmacist','admin']}><ReviewPage /></PrivateRoute>} />
-      <Route path="/scan" element={<PrivateRoute noLayout><ScanPage /></PrivateRoute>} />
+      <Route path="/scan" element={<PrivateRoute><ScanPage /></PrivateRoute>} />
       <Route path="/medicines" element={<PrivateRoute><MedicinePage /></PrivateRoute>} />
       <Route path="/medicine-info" element={<PrivateRoute><MedicinePage /></PrivateRoute>} />
       <Route path="/medicine-locations" element={<PrivateRoute><MedicineLocationsPage /></PrivateRoute>} />

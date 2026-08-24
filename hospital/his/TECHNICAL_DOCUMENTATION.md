@@ -25,7 +25,6 @@ HIS 系统是一套面向医院处方、药品、患者和扫码核验场景的 
 - 药师处方审核和发药确认
 - 移动端扫码核验页面
 - 关键业务事件审计链记录与校验
-- 服务完整性校验与截止日期保护
 
 ## 3. 技术栈
 
@@ -59,7 +58,7 @@ HIS 系统是一套面向医院处方、药品、患者和扫码核验场景的 
 | 认证 | jsonwebtoken | JWT 登录态 |
 | 密码校验 | bcryptjs | 用户密码哈希比对 |
 | 跨域 | cors | 后端 CORS 支持 |
-| 加密/哈希 | Node crypto | 文件完整性、审计链哈希 |
+| 加密/哈希 | Node crypto | 审计链哈希 |
 
 ### 3.3 数据库
 
@@ -94,16 +93,10 @@ his/
     src/
       index.ts             服务入口和路由挂载
       db.ts                MySQL 连接池和数据库访问保护
-      config.ts            系统截止日期配置
-      guard.ts             截止日期多层保护
-      verify.ts            文件完整性校验
       middleware/auth.ts   JWT 认证和角色鉴权
       routes/              REST API 路由
       services/auditChain.ts 可信审计链服务
     db/                    SQL 初始化和迁移脚本
-
-  scripts/
-    generate-checksums.js  生成服务完整性校验清单
 
   start-his.sh             一键启动前后端脚本
 ```
@@ -600,7 +593,7 @@ pending
 scanned_identify
   -> 第二次扫码：scanned_outbound，记录 scan2_time / scan2_user_id，写 DRUG_OUTBOUND 审计
 scanned_outbound
-  -> 第三次扫码：scanned_confirm，记录 scan3_time / scan3_user_id，写 NURSE_RECEIVED 审计
+  -> 第二次实际扫码：scanned_confirm，记录 scan3_time / scan3_user_id，写 NURSE_RECEIVED 审计
 scanned_confirm
   -> 再次扫码返回已完成
 ```
@@ -798,52 +791,19 @@ chainVersion + payloadHash + previousHash
 
 隐私保护方面，审计链不直接写入追溯码、处方和操作员明文，而是通过 `AUDIT_HASH_SALT` 加盐哈希后保存。
 
-### 10.6 文件完整性保护
-
-后端启动时会执行 `verifyIntegrity()`：
-
-```text
-读取 server/.integrity
-  -> AES-256-CBC 解密校验清单
-  -> 对受保护文件逐个计算 SHA-256
-  -> 任一文件缺失或哈希不匹配则拒绝启动
-```
-
-服务运行后会每 60 秒再次校验一次。如果发现文件被篡改，会触发关闭回调并退出服务。
-
-合法修改受保护文件后，需要运行：
-
-```bash
-node scripts/generate-checksums.js <密码>
-```
-
-重新生成校验清单。
-
-### 10.7 多层截止日期保护
-
-系统中存在多层截止日期判断，截止日期为 `2026-12-31`：
-
-- 前端路由层：超过日期后直接显示停止服务提示。
-- 登录接口：超过日期后拒绝登录。
-- 全局后端中间件：除登录外的 API 请求会被拦截。
-- JWT 生成层：超过日期后生成极短有效期 token。
-- 数据库查询层：包装 `pool.query`，超过日期后拒绝 SQL 查询。
-
-该设计通过多处调用降低单点绕过风险。
-
-### 10.8 本地 HTTPS 支持移动端扫码
+### 10.6 本地 HTTPS 支持移动端扫码
 
 移动端浏览器通常要求 HTTPS 才能调用摄像头。启动脚本会在 `his/client` 下生成 `key.pem` 和 `cert.pem`，Vite 配置检测到证书后会启用 HTTPS。
 
 首次访问自签名证书地址时，需要浏览器手动信任证书。
 
-### 10.9 前端移动端访问控制
+### 10.7 前端移动端访问控制
 
 `App.tsx` 中的 `MobileOnly` 会根据 User-Agent 判断移动端。如果是移动设备，除 `/scan` 和 `/login` 外，会自动跳转到 `/scan`。
 
 这样可以让手机端聚焦扫码核验，桌面端承担完整管理和审方功能。
 
-### 10.10 前端请求统一处理
+### 10.8 前端请求统一处理
 
 `services/api.ts` 封装 axios 实例：
 
@@ -972,5 +932,3 @@ curl -H "Authorization: Bearer <token>" http://localhost:3001/api/audit-chain/ve
 - 部分中文源文件在当前终端显示为乱码，通常与文件编码或终端编码有关，不影响本文档按代码结构描述功能。
 - `DELETE /api/prescriptions/all` 和追溯码重建接口适合测试或演示环境，生产环境应增加更严格的角色限制和二次确认。
 - 审计链能发现链路记录被篡改，但不替代数据库权限控制和备份策略。
-- 文件完整性校验依赖 `.integrity` 清单，代码合法修改后必须重新生成清单，否则后端会拒绝启动。
-
