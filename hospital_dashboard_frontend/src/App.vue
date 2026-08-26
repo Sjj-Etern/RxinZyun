@@ -1,9 +1,9 @@
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
 import CameraFeed from './components/CameraFeed.vue'
+import CadScene from './components/CadScene.vue'
 import PrescriptionProgress from './components/PrescriptionProgress.vue'
 import PrescriptionMonitor from './components/PrescriptionMonitor.vue'
-import layoutImg from './jpg/布局图.jpg'
 
 // 从环境变量读取配置
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8080'
@@ -128,9 +128,7 @@ onUnmounted(() => {
           <div class="panel" style="height: 100%;">
             <div class="panel-header"><span class="title">医院实时场景图</span></div>
             <div class="panel-body">
-              <div class="scene-container">
-                <img :src="layoutImg" class="scene-image" alt="医院实时场景布局图" />
-              </div>
+              <CadScene />
             </div>
           </div>
         </div>

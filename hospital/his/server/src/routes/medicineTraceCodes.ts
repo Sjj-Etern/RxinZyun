@@ -4,6 +4,7 @@ import https from 'https';
 import pool from '../db';
 import { authMiddleware } from '../middleware/auth';
 import { appendAuditRecord } from '../services/auditChain';
+import { config } from '../config';
 
 const router = Router();
 router.use(authMiddleware);
@@ -182,7 +183,7 @@ const findTraceCodeByInputForUpdate = async (conn: any, traceCodeInput: unknown)
 // 节点3扫码复核完成后通知医院大屏后端，触发车2继续配送。
 // 节点3对应所有追溯码第一次实际扫码完成（scan2_time / scanned_outbound）。
 function notifyBackendNode3Completed(prescriptionCode: string): void {
-  const base = process.env.HOSPITAL_BACKEND_URL || 'http://127.0.0.1:8080/api/v1';
+  const base = config.services.hospitalBackendUrl;
   const target = new URL(`${base}/workflow/pharmacist-success-trigger`);
   const body = JSON.stringify({ prescription_code: prescriptionCode });
   const transport = target.protocol === 'https:' ? https : http;
@@ -192,7 +193,7 @@ function notifyBackendNode3Completed(prescriptionCode: string): void {
     path: target.pathname + target.search,
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
-    timeout: 5000,
+    timeout: config.services.hospitalBackendTimeoutMs,
   }, (response) => {
     let raw = '';
     response.setEncoding('utf8');

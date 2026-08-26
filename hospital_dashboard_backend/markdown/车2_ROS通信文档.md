@@ -119,11 +119,15 @@ Set-Location "E:\contest\July_one\hospital\hospital_new_demo_back-test"
 
 **发送格式**：`{prescription_code}_nurse_arrive`
 
+**注意**：nurse_arrive 消息**不再触发** nurse-success（仅记录日志，语音播报仍由该消息触发）。nurse-success 改由节点4扫码触发，见 ⑦。
+
 ---
 
 ### ⑦ nurse-success（系统 → 车2）
 
-**触发**：收到 nurse_arrive 后立即发送
+**触发**：节点4扫码全部确认（处方所有追溯码扫到 `scanned_confirm`，即每个药品完成第二次扫码：节点3出库一次 + 节点4确认一次）。
+
+链路：HIS 检测全部确认 → `POST /api/v1/workflow/nurse-success-trigger`（幂等，同处方仅一次）→ 延迟 `NURSE_SUCCESS_DELAY` 秒（.env 配置，默认 0）→ 唤醒车2编排 Step7 → 停止 lift-open 连发 → 发送 nurse-success（连发 3 次自动停）
 
 **发送格式**：
 

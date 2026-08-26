@@ -1,14 +1,16 @@
 import mysql from 'mysql2/promise';
+import { config } from './config';
 
 const pool = mysql.createPool({
-  host: process.env.MYSQL_HOST || '192.168.51.13',
-  port: parseInt(process.env.MYSQL_PORT || '3306'),
-  user: process.env.MYSQL_USER || 'ros',
-  password: process.env.MYSQL_PASS || '123456',
-  database: process.env.MYSQL_DB || 'test',
+  host: config.database.host,
+  port: config.database.port,
+  user: config.database.user,
+  password: config.database.password,
+  database: config.database.database,
   waitForConnections: true,
-  connectionLimit: 10,
-  charset: 'utf8mb4',
+  connectionLimit: config.database.connectionLimit,
+  charset: config.database.charset,
+  timezone: 'Z',
 });
 
 // Test connection on startup

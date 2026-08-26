@@ -25,19 +25,6 @@ def _mjpeg_frame(jpeg_data: bytes) -> bytes:
             + jpeg_data + b'\r\n')
 
 
-def _create_placeholder_image(text: str) -> bytes:
-    img = np.zeros((480, 640, 3), dtype=np.uint8)
-    img[:] = [15, 23, 42]
-    cv2.rectangle(img, (20, 20), (620, 460), (51, 65, 85), 2)
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    text_size = cv2.getTextSize(text, font, 1.0, 2)[0]
-    text_x = (640 - text_size[0]) // 2
-    text_y = (480 + text_size[1]) // 2
-    cv2.putText(img, text, (text_x, text_y), font, 1.0, (148, 163, 184), 2)
-    _, buf = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 70])
-    return buf.tobytes()
-
-
 @router.get("/url", response_model=CameraUrlResponse)
 def camera_url():
     return {"rtsp_url": get_camera_rtsp_url()}
@@ -58,29 +45,34 @@ def camera_test():
 
 @router.get("/opencv")
 def opencv_stream():
-    """RTSP摄像头 - OpenCV转MJPEG流（限制重连次数，失败后快速结束）"""
+    """RTSP摄像头 - OpenCV转MJPEG流
+
+    稳定性策略：
+    - RTSP 打开/读取均设超时（环境变量 FFmpeg 层生效），避免长时间阻塞
+    - 掉线自动重连（最多5次，指数退避），重连期间静默等待
+    - 彻底连不上时直接结束流（不输出任何占位图，前端自动无缝切备用视频）
+    """
     rtsp_url = get_camera_rtsp_url()
-    offline_img = _create_placeholder_image("Camera Offline")
+    # 环境变量方式设置 FFmpeg RTSP 超时（需在首次 VideoCapture 前设置）
+    import os
+    os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp|stimeout;3000000")
 
     def frame_generator():
         cap = None
-        max_total_reconnects = 2  # 最多重连2次
+        max_total_reconnects = 5      # 提升重连上限（原2次）
         reconnect_count = 0
-        max_consecutive_failures = 3  # 连续失败3次放弃
+        max_consecutive_failures = 3
         consecutive_failures = 0
 
         while True:
-            # 限制重连总次数
+            # 重连次数耗尽：静默结束流，前端无感切回备用视频
             if reconnect_count >= max_total_reconnects:
-                # 返回一帧离线图后结束流，让前端触发 @error 切回备用视频
-                yield _mjpeg_frame(offline_img)
-                time.sleep(0.5)
-                return  # 结束生成器
+                return
 
             # 尝试连接
             if cap is None:
                 try:
-                    cap = cv2.VideoCapture(rtsp_url)
+                    cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
                     if not cap.isOpened():
                         cap = None
                         raise Exception("无法打开RTSP流")
@@ -91,8 +83,8 @@ def opencv_stream():
                 except Exception:
                     cap = None
                     reconnect_count += 1
-                    # 短暂等待后重试（1秒）
-                    time.sleep(1.0)
+                    # 指数退避重试：1s → 2s → 4s ...（上限5s）
+                    time.sleep(min(1.0 * (2 ** (reconnect_count - 1)), 5.0))
                     continue
 
             # 读取帧

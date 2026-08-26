@@ -11,13 +11,12 @@ import auditChainRoutes from './routes/auditChain';
 import faceProfileRoutes from './routes/faceProfiles';
 import robotRoutes from './routes/robots';
 import deliveryRecordRoutes from './routes/deliveryRecords';
+import { config } from './config';
 const app = express();
-const PORT = Number(process.env.PORT || 3001);
-const HOST = process.env.HOST || '0.0.0.0';
 
 // Middleware
-app.use(cors());
-app.use(express.json({ limit: '6mb' }));
+app.use(cors({ origin: config.server.corsOrigin }));
+app.use(express.json({ limit: config.server.jsonBodyLimit }));
 
 // Health check
 app.get('/api/health', (_req, res) => {
@@ -37,8 +36,8 @@ app.use('/api/face-profiles', faceProfileRoutes);
 app.use('/api/robots', robotRoutes);
 app.use('/api/delivery-records', deliveryRecordRoutes);
 // Start server (MySQL pool is initialized in db.ts)
-const server = app.listen(PORT, HOST, () => {
-  console.log(`🚀 服务器已启动: http://${HOST}:${PORT}`);
+const server = app.listen(config.server.port, config.server.host, () => {
+  console.log(`🚀 服务器已启动: http://${config.server.host}:${config.server.port}`);
   console.log('📋 测试账号:');
   console.log('   医生: doctor1 / 123456');
   console.log('   药师: pharmacist1 / 123456');

@@ -14,6 +14,7 @@ from app.api.v1.routers.agent import router as agent_router
 from app.api.v1.routers.data import router as data_router
 from app.api.v1.routers.prescription import router as prescription_router
 from app.api.v1.routers.workflow import router as workflow_router
+from app.api.v1.routers.robot import router as robot_router
 from app.schemas.sensor import DHT11DataCreate, SensorDataCreate
 from app.db.session import SessionLocal, engine
 from app.db import models, crud
@@ -86,6 +87,7 @@ async def lifespan(app: FastAPI):
             topic=cfg["topic"],
             send_topic=cfg["send_topic"],
             send_msg_type=cfg["send_msg_type"],
+            pose_topic=cfg.get("pose_topic", ""),
         )
         listener_task = asyncio.create_task(listener.start())
         _background_tasks.append(listener_task)
@@ -150,6 +152,7 @@ app.include_router(agent_router, prefix="/api/v1/agent", tags=["agent"])
 app.include_router(data_router, prefix="/api/v1/data", tags=["data"])
 app.include_router(prescription_router, prefix="/api/v1", tags=["prescription"])
 app.include_router(workflow_router, prefix="/api/v1", tags=["workflow"])
+app.include_router(robot_router, prefix="/api/v1", tags=["robot"])
 
 
 def get_db():

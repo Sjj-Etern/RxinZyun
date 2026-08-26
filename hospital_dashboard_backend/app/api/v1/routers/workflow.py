@@ -417,3 +417,44 @@ async def trigger_pharmacist_success(prescription_code: str = Body(..., embed=Tr
         "message": f"已触发车2 pharmacist-success: {prescription_code}",
         "delay": delay,
     }
+
+
+# 已触发过 nurse-success 的处方编码集合（进程内幂等去重，同一处方只触发一次）
+_triggered_nurse_success: set = set()
+
+
+@router.post("/workflow/nurse-success-trigger")
+async def trigger_nurse_success(prescription_code: str = Body(..., embed=True)):
+    """
+    HIS 节点4扫码全部确认时调用 → 延迟后触发车2 nurse-success 连续发送。
+
+    判断依据：节点4扫码结束（处方所有追溯码均已扫到确认状态 scanned_confirm，
+    即每个药品完成第二次扫码），由 HIS 扫码端点检测并 HTTP 通知本接口。
+    触发方式：唤醒车2 listener 的护士到达事件 → 停止 lift-open 连发 → Step8 发送
+    nurse-success（发3次自动停）。延迟时间通过 .env 的 NURSE_SUCCESS_DELAY 配置。
+    """
+    from app.services.his_sender import _senders as his_senders
+    from app.services.ros_listener import get_listener
+    car2_sender = his_senders.get(2)
+    car2_listener = get_listener(2)
+    if not car2_sender or not car2_listener:
+        raise HTTPException(status_code=503, detail="车2发送服务未启动")
+
+    # 幂等去重：同一处方只触发一次，避免重复扫码/并发通知导致重复发送
+    if prescription_code in _triggered_nurse_success:
+        print(f"[nurse-success-trigger] 处方 {prescription_code} 已触发过，跳过")
+        return {"status": "skipped", "message": f"处方 {prescription_code} 已触发过 nurse-success，跳过"}
+    _triggered_nurse_success.add(prescription_code)
+
+    # 延迟触发（由 .env NURSE_SUCCESS_DELAY 统一配置）
+    delay = settings.nurse_success_delay
+    if delay > 0:
+        print(f"[nurse-success-trigger] 处方 {prescription_code} 延迟 {delay} 秒后触发 nurse-success")
+        await asyncio.sleep(delay)
+
+    car2_listener.trigger_nurse_arrive_event(prescription_code)
+    return {
+        "status": "success",
+        "message": f"已触发车2 nurse-success: {prescription_code}",
+        "delay": delay,
+    }

@@ -8,7 +8,9 @@ ROS WebSocket 监听服务（多车支持版）
 """
 import asyncio
 import json
+import math
 import socket
+import time
 import logging
 import pymysql
 from datetime import datetime
@@ -338,11 +340,13 @@ class RosListener:
     """
 
     def __init__(self, car_id: int, ws_host: str, ws_port: int, topic: str,
-                 send_topic: str, send_msg_type: str):
+                 send_topic: str, send_msg_type: str,
+                 pose_topic: str = ""):
         self.car_id = car_id
         self.ws_host = ws_host
         self.ws_port = ws_port
         self.topic = topic
+        self.pose_topic = pose_topic  # 实时坐标 Topic（pose publisher 发布 "x,y"）
         self.send_topic = send_topic
         self.send_msg_type = send_msg_type
         self.ws_url = f"ws://{ws_host}:{ws_port}"
@@ -369,16 +373,114 @@ class RosListener:
         self.audio_state: Dict[str, Any] = {
             "car_can_go_triggered": False,
             "car_already_arrive_triggered": False,
+            "nurse_arrive_audio_triggered": False,
             "current_prescription_code": None,
         }
 
         self._nurse_arrive_event = asyncio.Event()
 
+        # 实时坐标缓存（由 pose publisher 通过 rosbridge 推送，2Hz）
+        self.latest_pose: Dict[str, Any] = {
+            "x": None,
+            "y": None,
+            "ts": None,                # 最后更新时间（ISO 字符串）
+            "listener_state": "stopped",  # stopped / connecting / connected / disconnected
+        }
+
     def _log_tag(self):
         return f"[ROS Listener 车{self.car_id}]"
 
+    def trigger_nurse_arrive_event(self, prescription_code: str = "") -> None:
+        """
+        由节点4扫码全部确认（POST /workflow/nurse-success-trigger）调用：
+        唤醒 8 步编排的 Step7 等待 → 停 lift-open → Step8 发送 nurse-success。
+        替代原先车2 nurse_arrive ROS 消息的触发职责。
+        """
+        tag = self._log_tag()
+        print(f"{tag} 节点4扫码全部确认: {prescription_code or '(无处方码)'} → 触发 nurse-success 流程")
+        self._nurse_arrive_event.set()
+
     def get_state(self) -> Dict[str, Any]:
         return self.ros_state.copy()
+
+    # ===== 实时坐标处理 =====
+
+    def get_pose(self) -> Dict[str, Any]:
+        """
+        返回当前实时坐标缓存（供 /api/v1/robot/pose 使用）。
+
+        小车 WebSocket 未连接（stopped/connecting/disconnected）时，
+        自动降级为模拟坐标：沿真实业务路径点匀速巡游（保证不出地图范围），
+        并标记 source="mock"；真实车连上后自动恢复 source="real"。
+        """
+        pose = self.latest_pose.copy()
+        if pose.get("listener_state") == "connected" and pose.get("x") is not None:
+            pose.setdefault("source", "real")
+            return pose
+        return self._mock_pose()
+
+    # ===== 模拟坐标兜底（小车不可达时前端地图仍有移动展示）=====
+
+    # 路径点与前端 CadScene .env 的真实业务路径一致（ROS 坐标，米）：
+    # 车1: HOME→药房→病房投放→返回途经→HOME；车2: HOME→电梯等待→电梯内→护士站→HOME
+    MOCK_WAYPOINTS: Dict[int, list] = {
+        1: [(1.56, 0.141), (1.54, -0.39), (0.030, -0.2777), (0.040, 0.227), (1.56, 0.141)],
+        2: [(0.30284, -0.225737), (-0.105803, -0.941809),
+            (-0.626348, -0.799792), (-0.870578, -1.5837), (0.30284, -0.225737)],
+    }
+    MOCK_SPEED = 0.15  # 巡游速度（米/秒）
+    _mock_t0 = time.monotonic()  # 类属性会被实例读取，起点用首次访问时间近似即可
+
+    def _mock_pose(self) -> Dict[str, Any]:
+        """按时间在路径折线上匀速插值，循环巡游。坐标取自真实路径点，不会出图。"""
+        waypoints = self.MOCK_WAYPOINTS.get(self.car_id) or [(0.0, 0.0), (0.5, 0.5), (0.0, 0.0)]
+        # 各段长度与累计弧长
+        seg_lens = [
+            math.hypot(waypoints[i + 1][0] - waypoints[i][0],
+                       waypoints[i + 1][1] - waypoints[i][1])
+            for i in range(len(waypoints) - 1)
+        ]
+        total = sum(seg_lens) or 1.0
+        dist = ((time.monotonic() - self._mock_t0) * self.MOCK_SPEED) % total
+
+        x, y = waypoints[0]
+        acc = 0.0
+        for i, seg in enumerate(seg_lens):
+            if acc + seg >= dist:
+                ratio = (dist - acc) / seg if seg else 0.0
+                x = waypoints[i][0] + (waypoints[i + 1][0] - waypoints[i][0]) * ratio
+                y = waypoints[i][1] + (waypoints[i + 1][1] - waypoints[i][1]) * ratio
+                break
+            acc += seg
+
+        return {
+            "x": round(x, 4),
+            "y": round(y, 4),
+            "ts": datetime.now().isoformat(),
+            "listener_state": self.latest_pose.get("listener_state", "stopped"),
+            "source": "mock",
+        }
+
+    def handle_pose_message(self, data: str) -> None:
+        """
+        解析 pose publisher 发来的 "x.xxx,y.yyy" 字符串。
+        失败时不覆盖已有坐标（保留上次有效值），仅记录警告。
+        """
+        tag = self._log_tag()
+        try:
+            parts = data.split(",")
+            if len(parts) != 2:
+                logger.warning(f"{tag} pose 数据格式错误（非 x,y）: {data}")
+                return
+            x = float(parts[0])
+            y = float(parts[1])
+            self.latest_pose["x"] = x
+            self.latest_pose["y"] = y
+            self.latest_pose["ts"] = datetime.now().isoformat()
+            self.latest_pose["listener_state"] = "connected"
+            logger.info(f"{tag} pose 更新: x={x:.3f}, y={y:.3f}")
+        except (ValueError, IndexError) as e:
+            logger.warning(f"{tag} pose 解析失败: {data}, err={e}")
 
     # ===== 机器人状态处理 =====
 
@@ -446,6 +548,7 @@ class RosListener:
                     self.audio_state["current_prescription_code"] = prescription_code
                     self.audio_state["car_can_go_triggered"] = False
                     self.audio_state["car_already_arrive_triggered"] = False
+                    self.audio_state["nurse_arrive_audio_triggered"] = False
                     print(f"{tag} 新单子开始，重置语音播报状态")
 
                 if not self.audio_state["car_can_go_triggered"]:
@@ -485,6 +588,27 @@ class RosListener:
                         print(f"{tag} 语音播报失败: {audio_err}")
                 else:
                     print(f"{tag} car_already_arrive 已触发过，不重复播放")
+
+        elif status == "nurse_arrive":
+            # 车2到达护士站 → 播报"药物已送达，请您确认"（连播2次，间隔2秒，每处方1轮）
+            # 判定逻辑与 all_completed 分支完全一致：要求 prescription_code 非空 + 独立幂等锁
+            if prescription_code:
+                if not self.audio_state["nurse_arrive_audio_triggered"]:
+                    print(f"{tag} 触发语音播报：护士到达（收到 nurse_arrive）")
+                    try:
+                        print(f"{tag} 播放 audio_id={settings.audio_id_end} (car_already_arrive) - 第1次")
+                        await play_audio_async(settings.audio_id_end)
+                        print(f"{tag} 等待2秒...")
+                        await asyncio.sleep(2)
+                        print(f"{tag} 播放 audio_id={settings.audio_id_end} (car_already_arrive) - 第2次")
+                        await play_audio_async(settings.audio_id_end)
+                        self.audio_state["nurse_arrive_audio_triggered"] = True
+                        print(f"{tag} 语音播报成功：nurse_arrive 到达播报")
+                    except Exception as audio_err:
+                        logger.error(f"语音播报失败: {audio_err}")
+                        print(f"{tag} 语音播报失败: {audio_err}")
+                else:
+                    print(f"{tag} nurse_arrive 播报已触发过，不重复播放")
 
     # ===== 获取关联的 HIS Sender =====
 
@@ -646,10 +770,12 @@ class RosListener:
                 print("=" * 60)
 
         elif status == "nurse_arrive":
+            # 注意：nurse-success 触发条件已改为"节点4扫码全部确认"（HIS 通过
+            # POST /workflow/nurse-success-trigger 通知后端），车2 的 nurse_arrive
+            # 消息不再触发 Step7/Step8，仅记录日志（语音播报仍由该消息触发）
             if prescription_code:
                 logger.info(f"护士已到达: {prescription_code}")
-                print(f"{tag} 护士已到达: {prescription_code}")
-                self._nurse_arrive_event.set()
+                print(f"{tag} 护士已到达: {prescription_code}（不再触发 nurse-success，由节点4扫码触发）")
 
         elif status in ("running-step5-waiting-end", "running_step5_waiting_end"):
             if medicine_id is not None and prescription_code and sender:
@@ -693,6 +819,7 @@ class RosListener:
 
                 if not ws_reachable:
                     self.ros_state["listener_state"] = ROSListenerState.DISCONNECTED.value
+                    self.latest_pose["listener_state"] = "disconnected"
                     logger.warning(f"{tag} ROS WebSocket 端口不可达: {self.ws_url}")
                     await asyncio.sleep(settings.ros_check_interval)
                     continue
@@ -703,6 +830,7 @@ class RosListener:
                 try:
                     async with websockets.connect(self.ws_url) as ws:
                         self.ros_state["listener_state"] = ROSListenerState.CONNECTED.value
+                        self.latest_pose["listener_state"] = "connected"
                         logger.info(f"{tag} 已连接 Ros WebSocket: {self.ws_url}")
                         print(f"[成功] {tag} 已连接 Ros WebSocket: {self.ws_url}")
 
@@ -713,6 +841,16 @@ class RosListener:
                         })
                         await ws.send(subscribe_msg)
                         print(f"{tag} [订阅] 已发送订阅请求: topic={self.topic}, type=std_msgs/String")
+
+                        # 订阅 pose topic（实时坐标，如果有配置）
+                        if self.pose_topic:
+                            pose_subscribe_msg = json.dumps({
+                                "op": "subscribe",
+                                "topic": self.pose_topic,
+                                "type": "std_msgs/String"
+                            })
+                            await ws.send(pose_subscribe_msg)
+                            print(f"{tag} [订阅] 已发送 pose 订阅请求: topic={self.pose_topic}")
 
                         try:
                             confirm = await asyncio.wait_for(ws.recv(), timeout=3)
@@ -733,15 +871,22 @@ class RosListener:
 
                                 if "msg" in msg_data and "data" in msg_data["msg"]:
                                     data = msg_data["msg"]["data"]
-                                    print(f"{tag} [收到] ROS 消息: {data}")
-                                    try:
-                                        # 异步处理消息，避免 lift-arrive 的 Step 7 等待 nurse_arrive 时
-                                        # 阻塞主循环，导致 nurse_arrive 消息无法被接收（死锁）
-                                        task = asyncio.create_task(self.handle_ros_message(data))
-                                        task.add_done_callback(self._on_msg_task_done)
-                                    except Exception as msg_err:
-                                        print(f"{tag} [错误] 创建消息处理任务失败（不中断连接）: {msg_err}")
-                                        logger.error(f"创建消息处理任务失败: {msg_err}", exc_info=True)
+                                    msg_topic = msg_data.get("topic", "")
+
+                                    # 按 topic 分流：pose 消息同步解析（轻量），状态消息异步处理
+                                    if self.pose_topic and msg_topic == self.pose_topic:
+                                        print(f"{tag} [收到] pose 消息: {data}")
+                                        self.handle_pose_message(data)
+                                    else:
+                                        print(f"{tag} [收到] ROS 状态消息: {data}")
+                                        try:
+                                            # 异步处理消息，避免 lift-arrive 的 Step 7 等待 nurse_arrive 时
+                                            # 阻塞主循环，导致 nurse_arrive 消息无法被接收（死锁）
+                                            task = asyncio.create_task(self.handle_ros_message(data))
+                                            task.add_done_callback(self._on_msg_task_done)
+                                        except Exception as msg_err:
+                                            print(f"{tag} [错误] 创建消息处理任务失败（不中断连接）: {msg_err}")
+                                            logger.error(f"创建消息处理任务失败: {msg_err}", exc_info=True)
                                 else:
                                     print(f"{tag} [警告] 消息格式不符合预期，已跳过")
 
@@ -791,8 +936,10 @@ class RosListener:
 # ===== 工厂函数 =====
 
 def create_listener(car_id: int, ws_host: str, ws_port: int, topic: str,
-                    send_topic: str, send_msg_type: str) -> RosListener:
-    listener = RosListener(car_id, ws_host, ws_port, topic, send_topic, send_msg_type)
+                    send_topic: str, send_msg_type: str,
+                    pose_topic: str = "") -> RosListener:
+    listener = RosListener(car_id, ws_host, ws_port, topic,
+                           send_topic, send_msg_type, pose_topic=pose_topic)
     _listeners[car_id] = listener
     return listener
 

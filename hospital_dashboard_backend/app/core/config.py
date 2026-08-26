@@ -83,6 +83,7 @@ class Settings(BaseSettings):
     car1_ws_host: str = "192.168.51.12"
     car1_ws_port: int = 9090
     car1_topic: str = "/car01_pub"  # 车1 监听的ROS Topic（接收消息）
+    car1_pose_topic: str = "car01_pose"  # 车1 实时坐标 Topic（pose publisher 发布 "x,y" 字符串）
     car1_send_topic: str = "/rxzy_msg"  # 车1 发送到ROS的Topic
     car1_send_msg_type: str = "his_sub"  # 车1 发送消息的类型
 
@@ -90,6 +91,7 @@ class Settings(BaseSettings):
     car2_ws_host: str = "192.168.51.12"
     car2_ws_port: int = 9090
     car2_topic: str = "/car02_pub"  # 车2 监听的ROS Topic（接收消息）
+    car2_pose_topic: str = "car02_pose"  # 车2 实时坐标 Topic（pose publisher 发布 "x,y" 字符串）
     car2_send_topic: str = "/car02_rxzy_msg"  # 车2 发送到ROS的Topic
     car2_send_msg_type: str = "his_sub"  # 车2 发送消息的类型
 
@@ -101,6 +103,7 @@ class Settings(BaseSettings):
     lift_across_delay: int = 60  # 电梯到达后发送跨楼信号的延迟时间（秒）
     car2_signal_interval: int = 2  # 车2 信号连续发送的重发间隔（秒）
     pharmacist_success_delay: int = 0  # 节点3扫码复核完成 → 发送车2 pharmacist-success 的延迟（秒）
+    nurse_success_delay: int = 0       # 节点4扫码全部确认 → 发送车2 nurse-success 的延迟（秒）
 
     # ===== 电梯硬件 TCP 通信配置（与 elevator_access_control ESP32 通信）=====
     elevator_tcp_host: str = "0.0.0.0"      # TCP 服务端监听地址（监听所有网卡）
@@ -146,6 +149,7 @@ class Settings(BaseSettings):
                 "ws_host": self.car1_ws_host,
                 "ws_port": self.car1_ws_port,
                 "topic": self.car1_topic,
+                "pose_topic": self.car1_pose_topic,
                 "send_topic": self.car1_send_topic,
                 "send_msg_type": self.car1_send_msg_type,
             },
@@ -154,6 +158,7 @@ class Settings(BaseSettings):
                 "ws_host": self.car2_ws_host,
                 "ws_port": self.car2_ws_port,
                 "topic": self.car2_topic,
+                "pose_topic": self.car2_pose_topic,
                 "send_topic": self.car2_send_topic,
                 "send_msg_type": self.car2_send_msg_type,
             },

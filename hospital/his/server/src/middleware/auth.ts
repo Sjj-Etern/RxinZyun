@@ -1,7 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
-
-const JWT_SECRET = 'his_jwt_secret_key_2024';
+import { config } from '../config';
 
 export interface AuthUser {
   id: number;
@@ -20,7 +19,9 @@ declare global {
 }
 
 export function generateToken(user: AuthUser): string {
-  return jwt.sign(user, JWT_SECRET, { expiresIn: '24h' });
+  return jwt.sign(user, config.auth.jwtSecret, {
+    expiresIn: config.auth.jwtExpiresIn as jwt.SignOptions['expiresIn'],
+  });
 }
 
 export function authMiddleware(req: Request, res: Response, next: NextFunction): void {
@@ -32,7 +33,7 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
 
   const token = authHeader.substring(7);
   try {
-    const decoded = jwt.verify(token, JWT_SECRET) as AuthUser;
+    const decoded = jwt.verify(token, config.auth.jwtSecret) as AuthUser;
     req.user = decoded;
     next();
   } catch {

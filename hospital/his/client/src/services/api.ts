@@ -39,8 +39,8 @@ export interface AuditChainVerifyResult {
   actual_previous_hash?: string;
 }
 const api = axios.create({
-  baseURL: '/api',
-  timeout: 10000,
+  baseURL: import.meta.env.VITE_API_BASE_URL,
+  timeout: Number(import.meta.env.VITE_API_TIMEOUT_MS),
 });
 
 // Auto-attach token

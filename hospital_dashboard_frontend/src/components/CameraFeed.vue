@@ -7,115 +7,90 @@ const props = defineProps({
   fallbackVideo: { type: String, default: '' },
 })
 
-// 从 .env 读取加载阈值（带默认值）：超时或连续失败后回退到本地备用视频
+// 从 .env 读取加载阈值（带默认值）
 const CONNECT_TIMEOUT = Number(import.meta.env.VITE_CAMERA_CONNECT_TIMEOUT) || 5000
-const MAX_ERRORS = Number(import.meta.env.VITE_CAMERA_MAX_ERRORS) || 3
+// 探测失败后的静默重试间隔（毫秒）：摄像头恢复后自动切回实时流
+const RETRY_INTERVAL = 30000
 
-const isConnected = ref(false)
-const streamKey = ref(0)
-const isLoadSuccess = ref(false)
-const errorCount = ref(0)
+// 播放模式：video = 备用视频（默认，永远有画面）；live = 实时流
+const mode = ref('video')
+const probeKey = ref(0)
+const liveKey = ref(0)
 
-let connectionTimeout = null
-let retryTimeout = null
+let probeTimer = null   // 探测超时计时器
+let retryTimer = null   // 周期重试计时器
+let disposed = false
 
-// 当前流URL - 只在成功连接后添加时间戳防缓存
-const currentStreamUrl = computed(() => {
-  if (!isConnected.value) return ''
-  // 只在首次连接时添加时间戳，后续不刷新
+// 当前探测用隐藏图 URL（带时间戳防缓存）
+const probeUrl = computed(() => {
   const separator = props.streamUrl.includes('?') ? '&' : '?'
-  return `${props.streamUrl}${separator}t=${streamKey.value}`
+  return `${props.streamUrl}${separator}t=${probeKey.value}`
 })
 
-// 连接实时流（挂载时自动调用 + 点击手动重试共用）
-const connectStream = () => {
-  if (isConnected.value) return
+// 当前实时流 URL（仅在切换到 live 后挂载显示）
+const liveUrl = computed(() => {
+  const separator = props.streamUrl.includes('?') ? '&' : '?'
+  return `${props.streamUrl}${separator}t=${liveKey.value}`
+})
 
-  // 重置状态
-  errorCount.value = 0
-  isLoadSuccess.value = false
-
-  // 生成新的流Key（防止缓存）
-  streamKey.value = Date.now()
-  isConnected.value = true
-
-  // 设置连接超时检测
-  if (connectionTimeout) clearTimeout(connectionTimeout)
-  connectionTimeout = setTimeout(() => {
-    // 超时内没有成功加载，切回备用视频
-    if (!isLoadSuccess.value) {
-      console.log(`[${props.title}] 连接超时，切回备用视频`)
-      disconnectStream()
-    }
+// 静默探测实时流：隐藏 img 尝试加载，首帧到达 = 摄像头在线
+const startProbe = () => {
+  if (disposed) return
+  stopTimers()
+  probeKey.value = Date.now()
+  probeTimer = setTimeout(() => {
+    // 超时未收到首帧：保持备用视频，安排下次静默重试
+    scheduleRetry()
   }, CONNECT_TIMEOUT)
 }
 
-// 点击：手动重试连接（已在实时流时无效）
-const handleCameraClick = () => {
-  connectStream()
+const stopTimers = () => {
+  if (probeTimer) { clearTimeout(probeTimer); probeTimer = null }
+  if (retryTimer) { clearTimeout(retryTimer); retryTimer = null }
 }
 
-// 挂载即自动连接实时流（实时优先，失败回退本地视频）
+const scheduleRetry = () => {
+  if (disposed) return
+  stopTimers()
+  retryTimer = setTimeout(() => startProbe(), RETRY_INTERVAL)
+}
+
+// 探测成功：无感切换到实时流
+const handleProbeLoad = () => {
+  if (disposed) return
+  stopTimers()
+  liveKey.value = Date.now()
+  mode.value = 'live'
+  console.log(`[${props.title}] 实时流已接通`)
+}
+
+// 探测失败：静默保持备用视频，稍后重试（无任何 UI 提示）
+const handleProbeError = () => {
+  scheduleRetry()
+}
+
+// 实时流中断：静默切回备用视频并恢复探测
+const handleLiveError = () => {
+  if (mode.value !== 'live') return
+  mode.value = 'video'
+  console.log(`[${props.title}] 实时流中断，已无缝切回备用画面`)
+  scheduleRetry()
+}
+
 onMounted(() => {
-  connectStream()
+  // 默认播放备用视频，同时后台静默探测实时流
+  startProbe()
 })
 
-// 图片加载成功
-const handleImageLoad = () => {
-  isLoadSuccess.value = true
-  errorCount.value = 0
-  if (connectionTimeout) {
-    clearTimeout(connectionTimeout)
-    connectionTimeout = null
-  }
-  console.log(`[${props.title}] 流连接成功`)
-}
-
-// 图片加载失败
-const handleImageError = () => {
-  errorCount.value++
-  console.error(`[${props.title}] 流加载失败，错误计数: ${errorCount.value}`)
-  
-  // 连续失败达到阈值，断开连接
-  if (errorCount.value >= MAX_ERRORS) {
-    console.log(`[${props.title}] 连续失败${MAX_ERRORS}次，切回备用视频`)
-    disconnectStream()
-  }
-}
-
-// 断开流连接
-const disconnectStream = () => {
-  isConnected.value = false
-  isLoadSuccess.value = false
-  errorCount.value = 0
-  
-  if (connectionTimeout) {
-    clearTimeout(connectionTimeout)
-    connectionTimeout = null
-  }
-  if (retryTimeout) {
-    clearTimeout(retryTimeout)
-    retryTimeout = null
-  }
-}
-
-// 备用视频加载失败
-const handleVideoError = () => {
-  console.error(`[${props.title}] 备用视频加载失败`)
-}
-
-// 组件卸载时清理
 onUnmounted(() => {
-  disconnectStream()
+  disposed = true
+  stopTimers()
 })
 
-// 监听streamUrl变化，重新连接
+// 监听streamUrl变化，重新探测
 watch(() => props.streamUrl, () => {
-  if (isConnected.value) {
-    // 如果已连接，重新触发连接
-    disconnectStream()
-    setTimeout(() => connectStream(), 100)
-  }
+  mode.value = 'video'
+  startProbe()
 })
 </script>
 
@@ -124,37 +99,41 @@ watch(() => props.streamUrl, () => {
     <div class="panel-header">
       <span class="title">{{ title }}</span>
     </div>
-    <div class="panel-body camera-body" @click="handleCameraClick">
+    <div class="panel-body camera-body">
       <div class="camera-viewfinder"></div>
 
-      <!-- 点击后显示实时流 -->
+      <!-- 实时流（探测成功后显示；中断即卸载，无感切回备用视频） -->
       <img
-        v-show="isConnected"
-        :key="streamKey"
-        :src="currentStreamUrl"
-        alt="Camera feed"
+        v-if="mode === 'live'"
+        :key="liveKey"
+        :src="liveUrl"
+        alt=""
         class="video-feed"
-        @load="handleImageLoad"
-        @error="handleImageError"
+        @error="handleLiveError"
       />
 
-      <!-- 默认显示备用视频 -->
+      <!-- 备用视频（默认画面，循环播放，永远有内容） -->
       <video
-        v-show="!isConnected"
+        v-show="mode !== 'live'"
         class="video-feed"
         autoplay
         muted
         loop
         playsinline
-        @error="handleVideoError"
       >
         <source :src="fallbackVideo" type="video/mp4">
       </video>
 
-      <!-- 连接提示 -->
-      <div v-if="isConnected && !isLoadSuccess" class="connecting-overlay">
-        <span>正在连接...</span>
-      </div>
+      <!-- 隐藏探测图：不占布局，仅用于判断摄像头是否在线 -->
+      <img
+        v-if="mode !== 'live'"
+        :key="probeKey"
+        :src="probeUrl"
+        alt=""
+        style="position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none;"
+        @load="handleProbeLoad"
+        @error="handleProbeError"
+      />
     </div>
   </div>
 </template>
@@ -235,18 +214,5 @@ watch(() => props.streamUrl, () => {
   object-fit: cover;
   position: relative;
   z-index: 2;
-}
-
-.connecting-overlay {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(1, 6, 16, 0.8);
-  z-index: 5;
-  color: var(--theme-cyan);
-  font-size: 14px;
-  font-weight: 600;
 }
 </style>

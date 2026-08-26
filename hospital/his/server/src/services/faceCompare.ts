@@ -1,4 +1,5 @@
 import http from 'http';
+import { config } from '../config';
 
 type FaceServiceResponse = {
   matched?: boolean;
@@ -9,7 +10,7 @@ type FaceServiceResponse = {
   detail?: string;
 };
 
-const baseUrl = process.env.FACE_COMPARE_URL || 'http://127.0.0.1:8000/api/v1/face';
+const baseUrl = config.services.faceCompareUrl;
 
 function post(path: string, payload: Record<string, string>): Promise<FaceServiceResponse> {
   const target = new URL(`${baseUrl}${path}`);
@@ -21,7 +22,7 @@ function post(path: string, payload: Record<string, string>): Promise<FaceServic
       path: target.pathname,
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
-      timeout: 15000,
+      timeout: config.services.faceCompareTimeoutMs,
     }, (response) => {
       let raw = '';
       response.setEncoding('utf8');

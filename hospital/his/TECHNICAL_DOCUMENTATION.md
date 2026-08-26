@@ -60,17 +60,29 @@ HIS 系统是一套面向医院处方、药品、患者和扫码核验场景的 
 | 跨域 | cors | 后端 CORS 支持 |
 | 加密/哈希 | Node crypto | 审计链哈希 |
 
-### 3.3 数据库
+### 3.3 统一环境配置
 
-数据库为 MySQL 8，默认连接配置位于 `his/server/src/db.ts`：
+HIS 前端、后端和一键启动脚本统一读取 `his/.env`。配置模板为 `his/.env.example`，复制后按部署环境修改：
 
-- host：`MYSQL_HOST`，默认 `192.168.51.133`
-- port：`MYSQL_PORT`，默认 `3306`
-- user：`MYSQL_USER`，默认 `ros`
-- password：`MYSQL_PASS`，默认 `123456`
-- database：`MYSQL_DB`，默认 `test`
-- charset：`utf8mb4`
-- connectionLimit：`10`
+```bash
+cd his
+cp .env.example .env
+```
+
+主要配置分组如下：
+
+- 服务监听：`HIS_BACKEND_HOST`、`HIS_BACKEND_PORT`、`HIS_FRONTEND_HOST`、`HIS_FRONTEND_PORT`
+- 前端代理：`VITE_API_TARGET`、`VITE_API_BASE_URL`、`VITE_API_TIMEOUT_MS`
+- MySQL：`MYSQL_HOST`、`MYSQL_PORT`、`MYSQL_USER`、`MYSQL_PASS`、`MYSQL_DB`
+- 认证与审计：`JWT_SECRET`、`JWT_EXPIRES_IN`、`AUDIT_HASH_SALT`
+- 外部服务：`FACE_COMPARE_URL`、`HOSPITAL_BACKEND_URL` 及对应超时配置
+- 启动与 HTTPS：`HIS_PORT_SCAN_RANGE`、`HIS_HTTPS_CERT_*`、`HIS_LOCAL_HOST`
+
+后端通过 `server/src/config.ts` 加载并校验必填配置，前端 Vite 通过 `envDir` 读取同一份 `.env`。`.env` 含密码和密钥，不能提交到版本库。
+
+### 3.4 数据库
+
+数据库为 MySQL 8，连接参数统一配置在 `his/.env`，连接池实现位于 `his/server/src/db.ts`。
 
 基础建表和示例数据可参考 `his/server/db/test.sql`，后续迁移脚本位于 `his/server/db/migration_*.sql`。
 
@@ -121,14 +133,14 @@ Express 后端 his/server
 MySQL 数据库 test
 ```
 
-前端开发服务默认监听 `3002`，后端默认监听 `3001`。Vite 将 `/api` 代理到后端，因此前端代码中 axios 的 `baseURL` 设置为 `/api`。
+前端开发服务和后端监听端口由 `his/.env` 配置。Vite 将 `/api` 代理到后端，因此前端代码中 axios 的 `baseURL` 由 `VITE_API_BASE_URL` 配置。
 
 一键启动脚本 `his/start-his.sh` 会完成：
 
 1. 检查并生成本地 HTTPS 证书。
 2. 检查前后端 `node_modules`，缺失时执行 `npm ci`。
-3. 自动选择可用后端端口，优先 `3001`。
-4. 自动选择可用前端端口，优先 `3002`。
+3. 以 `HIS_BACKEND_PORT` 为首选端口，自动选择可用后端端口。
+4. 以 `HIS_FRONTEND_PORT` 为首选端口，自动选择可用前端端口。
 5. 将 `VITE_API_TARGET` 指向后端地址。
 6. 同时启动后端 `npm run dev` 和前端 `npm run dev`。
 
@@ -927,8 +939,7 @@ curl -H "Authorization: Bearer <token>" http://localhost:3001/api/audit-chain/ve
 
 ## 14. 当前实现边界与注意事项
 
-- JWT 密钥当前写在代码中，正式生产环境应改为环境变量。
-- 数据库默认连接信息写在代码中，生产环境应使用环境变量覆盖。
+- JWT 密钥、审计盐值和数据库连接信息统一存放在 `.env`，生产环境应使用独立且高强度的值。
 - 部分中文源文件在当前终端显示为乱码，通常与文件编码或终端编码有关，不影响本文档按代码结构描述功能。
 - `DELETE /api/prescriptions/all` 和追溯码重建接口适合测试或演示环境，生产环境应增加更严格的角色限制和二次确认。
 - 审计链能发现链路记录被篡改，但不替代数据库权限控制和备份策略。

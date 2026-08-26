@@ -1,129 +1,425 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 
 // ============================================================================
-// 车标位置（手动）
-// 当前手动设定 xy 值控制车标位置；后续接入实时坐标时，
-// 只需启用下方 fetchPose() 并把 pose 改为它的返回值，其余代码无需改动。
+// 从 .env 读取配置（注意用 || 兜底，避免 # 颜色值被当注释变空）
 // ============================================================================
-const POSE = { x: 1500, y: 1200 } // ← 手动改这里（默认地图正中）
+const env = (key, fallback = '') => import.meta.env[key] || fallback
+const num = (key, fallback = 0) => Number(env(key, fallback))
+const backendUrl = env('VITE_BACKEND_URL', 'http://localhost:8080')
+const poseApi = env('VITE_ROBOT_POSE_API', '/api/v1/robot/pose')
+const pollMs = num('VITE_ROBOT_POSE_POLL_MS', 500)
+const failThreshold = num('VITE_ROBOT_POSE_FAIL_THRESHOLD', 5)
 
-// 坐标映射配置（来自 .env，确认实际坐标系后在 .env 统一修改）
-const X_MIN = Number(import.meta.env.VITE_MAP_X_MIN ?? 0)
-const X_MAX = Number(import.meta.env.VITE_MAP_X_MAX ?? 3000)
-const Y_MIN = Number(import.meta.env.VITE_MAP_Y_MIN ?? 0)
-const Y_MAX = Number(import.meta.env.VITE_MAP_Y_MAX ?? 2400)
-const Y_AXIS = import.meta.env.VITE_MAP_Y_AXIS || 'up' // up=原点左下/y向上(翻转)；down=原点左上/y向下
+// ============================================================================
+// 动态加载 src/map/ 下所有 png 地图
+// 以后新地图文件放入 src/map/ 并运行 sync_maps.py 后，无需改此 import
+// ============================================================================
+const mapModules = import.meta.glob('../map/*.png', { eager: true, query: '?url', import: 'default' })
 
-// 当前车位（后续接实时坐标：把这里换成 fetchPose() 的返回）
-const pose = ref({ ...POSE })
+function getMapUrl(mapName) {
+  if (!mapName) return ''
+  return mapModules[`../map/${mapName}.png`] || ''
+}
 
-// 预留：后续接后端实时位姿时启用（取消注释并在 pose 处调用）
-// async function fetchPose() {
-//   const base = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8080'
-//   const api = import.meta.env.VITE_POSE_API || '/api/v1/robot/pose'
-//   const res = await fetch(`${base}${api}`)
-//   if (res.ok) return await res.json() // 期望 { x, y }
-//   return pose.value
-// }
+// ============================================================================
+// 地图放大倍数（控制 viewBox 聚焦范围）
+//   SCALE=1   → 显示全图
+//   SCALE=N>1 → viewBox 缩小到全图 1/N，聚焦路径中心区域（视觉放大 N 倍）
+// 注意：放大通过裁剪 viewBox 实现，不是放大 image 尺寸
+//       （image 与 viewBox 同比例放大等于没放大）
+// ============================================================================
+const MAP_SCALE = Math.max(1, num('VITE_MAP_SCALE', 1))
 
-// xy → 地图百分比位置（车标用 HTML 覆盖层，不被 SVG 拉伸影响，始终为正圆）
-const dotStyle = computed(() => {
-  const { x, y } = pose.value
-  const leftPct = ((x - X_MIN) / (X_MAX - X_MIN)) * 100
-  const yPct = ((y - Y_MIN) / (Y_MAX - Y_MIN)) * 100
-  const topPct = Y_AXIS === 'up' ? 100 - yPct : yPct
-  return { left: `${leftPct}%`, top: `${topPct}%` }
+// ============================================================================
+// ROS 坐标换算（基于 yaml 参数，y 翻转，不乘 SCALE）
+//   px = (x - ORIGIN_X) / RESOLUTION
+//   py = H - (y - ORIGIN_Y) / RESOLUTION
+// 坐标系由 map.yaml 自动对齐，无需手动标定
+// ============================================================================
+function makeRosProjector(mapName) {
+  const prefix = `VITE_MAP_${mapName.toUpperCase()}`
+  const H = num(`${prefix}_H`)
+  const resolution = num(`${prefix}_RESOLUTION`)
+  const originX = num(`${prefix}_ORIGIN_X`)
+  const originY = num(`${prefix}_ORIGIN_Y`)
+  return (x, y) => ({
+    px: (x - originX) / resolution,
+    py: H - (y - originY) / resolution,
+  })
+}
+
+// 读取地图原始尺寸（不乘 SCALE）
+function getMapSize(mapName) {
+  const prefix = `VITE_MAP_${mapName.toUpperCase()}`
+  return { w: num(`${prefix}_W`), h: num(`${prefix}_H`) }
+}
+
+// ============================================================================
+// 计算聚焦 viewBox：SCALE=1 全图；SCALE>1 聚焦路径中心，宽高=全图/SCALE
+// ============================================================================
+function computeFocus(points, mapSize, scale) {
+  if (scale <= 1) {
+    return { x: 0, y: 0, w: mapSize.w, h: mapSize.h }
+  }
+  const xs = points.map(p => p.px)
+  const ys = points.map(p => p.py)
+  const cx = (Math.min(...xs) + Math.max(...xs)) / 2
+  const cy = (Math.min(...ys) + Math.max(...ys)) / 2
+  const vbW = mapSize.w / scale
+  const vbH = mapSize.h / scale
+  return { x: cx - vbW / 2, y: cy - vbH / 2, w: vbW, h: vbH }
+}
+
+// 车标/轨迹尺寸补偿：放大 N 倍后视觉放大 N 倍，除以 √N 保持适中
+const SCALE_COMPENSATE = Math.sqrt(MAP_SCALE)
+const STROKE_W = 6 / SCALE_COMPENSATE
+const CAR_R = 12 / SCALE_COMPENSATE
+const RIPPLE_R = 22 / SCALE_COMPENSATE
+const DASH = `${14 / SCALE_COMPENSATE} ${10 / SCALE_COMPENSATE}`
+
+// 点列表 → SVG path d 字符串：M x,y L x,y ... Z
+function toPathD(points) {
+  if (!points.length) return ''
+  const [first, ...rest] = points
+  const d = [`M ${first.px.toFixed(1)},${first.py.toFixed(1)}`]
+  rest.forEach(p => d.push(`L ${p.px.toFixed(1)},${p.py.toFixed(1)}`))
+  d.push('Z')
+  return d.join(' ')
+}
+
+// ============================================================================
+// 通用：构建一辆车的地图数据（车1/车2 共用，消除重复）
+// 预设路径点用作：演示模式 animateMotion + 灰色半透明参考线
+// ============================================================================
+function useCarMap(carId) {
+  const mapName = env(`VITE_${carId}_MAP`)
+  const mapUrl = getMapUrl(mapName)
+  const hasMap = !!(mapName && mapUrl)
+  const mapSize = getMapSize(mapName)
+  const projector = makeRosProjector(mapName)
+  const color = env(`VITE_${carId}_COLOR`, '#00f0ff')
+  const duration = num(`VITE_${carId}_DURATION`, 20)
+
+  let points = []
+  if (carId === 'CAR1') {
+    // HOME → 药房 → 病房送药 → 返回途经点 → 回 HOME
+    points = [
+      projector(num('VITE_CAR1_HOME_X'), num('VITE_CAR1_HOME_Y')),
+      projector(num('VITE_CAR1_PHARMACY_X'), num('VITE_CAR1_PHARMACY_Y')),
+      projector(num('VITE_CAR1_DROP_X'), num('VITE_CAR1_DROP_Y')),
+      projector(num('VITE_CAR1_RETURN_X'), num('VITE_CAR1_RETURN_Y')),
+      projector(num('VITE_CAR1_HOME_X'), num('VITE_CAR1_HOME_Y')),
+    ]
+  } else {
+    // HOME → 电梯等待 → 电梯内 → 护士站 → 回 HOME
+    points = [
+      projector(num('VITE_CAR2_HOME_X'), num('VITE_CAR2_HOME_Y')),
+      projector(num('VITE_CAR2_LIFT_WAIT_X'), num('VITE_CAR2_LIFT_WAIT_Y')),
+      projector(num('VITE_CAR2_LIFT_INSIDE_X'), num('VITE_CAR2_LIFT_INSIDE_Y')),
+      projector(num('VITE_CAR2_NURSE_X'), num('VITE_CAR2_NURSE_Y')),
+      projector(num('VITE_CAR2_HOME_X'), num('VITE_CAR2_HOME_Y')),
+    ]
+  }
+
+  const pathD = toPathD(points)
+  const start = points[0]
+  const focus = computeFocus(points, mapSize, MAP_SCALE)
+  return { mapName, mapUrl, hasMap, mapSize, color, duration, points, pathD, start, focus, projector }
+}
+
+const car1 = useCarMap('CAR1')
+const car2 = useCarMap('CAR2')
+
+// ============================================================================
+// 实时坐标状态（轮询后端 /api/v1/robot/pose）
+// ============================================================================
+const car1Pose = ref({ x: null, y: null, ts: null, listener_state: 'stopped' })
+const car2Pose = ref({ x: null, y: null, ts: null, listener_state: 'stopped' })
+
+// 模式：realtime（API 可用） / demo（API 不可用，降级演示）
+// 每辆车显示实时车标还是灰色等待，由模板按各自坐标有无判断
+const mode = ref('demo')
+let failCount = 0
+let pollTimer = null
+
+async function pollPose() {
+  try {
+    const res = await fetch(`${backendUrl}${poseApi}`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = await res.json()
+    failCount = 0
+    if (data.car1) car1Pose.value = data.car1
+    if (data.car2) car2Pose.value = data.car2
+    // 控制台打印数据来源：real = 真实小车轨迹，mock = 后端模拟数据
+    console.log(
+      `[CadScene] pose 来源 → 车1: ${data.car1?.source ?? 'unknown'} (x=${data.car1?.x}, y=${data.car1?.y}) | ` +
+      `车2: ${data.car2?.source ?? 'unknown'} (x=${data.car2?.x}, y=${data.car2?.y})`
+    )
+    // API 通则实时模式（每辆车具体显示由坐标有无决定）
+    mode.value = 'realtime'
+  } catch (e) {
+    failCount++
+    if (failCount >= failThreshold) {
+      mode.value = 'demo'
+      console.warn(`[CadScene] pose API 连续失败 ${failCount} 次，切到本地演示动画`)
+    }
+  }
+}
+
+onMounted(() => {
+  pollPose()
+  pollTimer = setInterval(pollPose, pollMs)
 })
+onUnmounted(() => {
+  if (pollTimer) clearInterval(pollTimer)
+})
+
+// ============================================================================
+// 实时车标位置（ROS 坐标 → jpg 像素，复用 projector）
+// ============================================================================
+const car1Marker = computed(() => {
+  if (car1Pose.value.x == null) return null
+  return car1.projector(car1Pose.value.x, car1Pose.value.y)
+})
+const car2Marker = computed(() => {
+  if (car2Pose.value.x == null) return null
+  return car2.projector(car2Pose.value.x, car2Pose.value.y)
+})
+
+// 状态条：无论真实数据还是模拟数据，只要在轮询即显示"实时"
+const modeText = computed(() => '● 实时')
+const modeClass = computed(() => 'tag-realtime')
 </script>
 
 <template>
   <div class="cad-scene">
-    <!-- CAD 平面图（仅形状，拉伸铺满） -->
-    <svg class="cad-svg" viewBox="0 0 3000 2400" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
-      <!-- 房间外轮廓（贴满四边） -->
-      <rect x="0" y="0" width="3000" height="2400" class="shape" />
-      <!-- 左下隔间 700×400 -->
-      <rect x="0" y="2000" width="700" height="400" class="shape" />
-      <!-- 左内墙（竖向）位于 950mm，高 1800mm -->
-      <line x1="950" y1="600" x2="950" y2="2400" class="shape" />
-      <!-- 中间隔墙 140×1800 -->
-      <rect x="1670" y="0" width="140" height="1800" class="shape" />
-      <!-- 右下隔间 400×700 -->
-      <rect x="2600" y="1700" width="400" height="700" class="shape" />
-      <!-- 右上上隔间 260×400 -->
-      <rect x="2740" y="0" width="260" height="400" class="shape" />
-      <!-- 右上下隔间 400×400 -->
-      <rect x="2600" y="400" width="400" height="400" class="shape" />
-    </svg>
+    <!-- 顶部状态条 -->
+    <div class="status-bar">
+      <span class="status-tag" :class="modeClass">{{ modeText }}</span>
+    </div>
 
-    <!-- 车标（固定圆点，不旋转；HTML 覆盖层，不受地图拉伸影响） -->
-    <div class="car-dot" :style="dotStyle">
-      <span class="car-dot-core"></span>
+    <!-- 双车地图横向排列 -->
+    <div class="map-row">
+      <!-- ============ 左侧：车1 地图 ============ -->
+      <div class="map-pane">
+        <div class="pane-header">
+          <span class="pane-title">车1 实时地图</span>
+          <span class="pane-tag" :class="car1.hasMap ? 'tag-ok' : 'tag-wait'">
+            {{ car1.hasMap ? `已同步 · ${car1.mapName}` : '待同步' }}
+          </span>
+        </div>
+        <div class="pane-body">
+          <svg
+            v-if="car1.hasMap && car1.mapSize.w"
+            class="map-svg"
+            :viewBox="`${car1.focus.x} ${car1.focus.y} ${car1.focus.w} ${car1.focus.h}`"
+            preserveAspectRatio="xMidYMid meet"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <!-- 地图底图（ROS 栅格地图，原始尺寸，viewBox 裁剪聚焦区域）-->
+            <image :href="car1.mapUrl" x="0" y="0" :width="car1.mapSize.w" :height="car1.mapSize.h" />
+
+            <!-- 灰色半透明参考路径（预设轨迹，所有模式都显示）-->
+            <path :d="car1.pathD" fill="none" stroke="#4a6080"
+                  :stroke-width="STROKE_W" :stroke-dasharray="DASH" opacity="0.5" />
+
+            <!-- 实时模式（API 可用）：有坐标显示实时车标，无坐标显示灰色等待 -->
+            <template v-if="mode === 'realtime'">
+              <template v-if="car1Marker">
+                <circle :r="RIPPLE_R" :cx="car1Marker.px" :cy="car1Marker.py" :fill="car1.color" opacity="0.25" />
+                <circle :r="CAR_R" :cx="car1Marker.px" :cy="car1Marker.py" :fill="car1.color" />
+              </template>
+              <template v-else>
+                <circle :r="RIPPLE_R" :cx="car1.start.px" :cy="car1.start.py" fill="#666" opacity="0.2" />
+                <circle :r="CAR_R" :cx="car1.start.px" :cy="car1.start.py" fill="#666" />
+              </template>
+            </template>
+            <!-- 演示模式（API 不可用）：animateMotion 沿静态路径动画 -->
+            <template v-else>
+              <circle :r="RIPPLE_R" :cx="car1.start.px" :cy="car1.start.py" :fill="car1.color" opacity="0.25">
+                <animateMotion :dur="`${car1.duration}s`" repeatCount="1" fill="freeze" :path="car1.pathD" />
+              </circle>
+              <circle :r="CAR_R" :cx="car1.start.px" :cy="car1.start.py" :fill="car1.color">
+                <animateMotion :dur="`${car1.duration}s`" repeatCount="1" fill="freeze" :path="car1.pathD" />
+              </circle>
+            </template>
+          </svg>
+          <div v-else class="map-placeholder">
+            <div class="placeholder-text">车1 地图未同步</div>
+            <div class="placeholder-hint">请运行 <code>python scripts/sync_maps.py</code></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ 右侧：车2 地图 ============ -->
+      <div class="map-pane">
+        <div class="pane-header">
+          <span class="pane-title">车2 实时地图</span>
+          <span class="pane-tag" :class="car2.hasMap ? 'tag-ok' : 'tag-wait'">
+            {{ car2.hasMap ? `已同步 · ${car2.mapName}` : '待同步' }}
+          </span>
+        </div>
+        <div class="pane-body">
+          <svg
+            v-if="car2.hasMap && car2.mapSize.w"
+            class="map-svg"
+            :viewBox="`${car2.focus.x} ${car2.focus.y} ${car2.focus.w} ${car2.focus.h}`"
+            preserveAspectRatio="xMidYMid meet"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <image :href="car2.mapUrl" x="0" y="0" :width="car2.mapSize.w" :height="car2.mapSize.h" />
+
+            <path :d="car2.pathD" fill="none" stroke="#4a6080"
+                  :stroke-width="STROKE_W" :stroke-dasharray="DASH" opacity="0.5" />
+
+            <template v-if="mode === 'realtime'">
+              <template v-if="car2Marker">
+                <circle :r="RIPPLE_R" :cx="car2Marker.px" :cy="car2Marker.py" :fill="car2.color" opacity="0.25" />
+                <circle :r="CAR_R" :cx="car2Marker.px" :cy="car2Marker.py" :fill="car2.color" />
+              </template>
+              <template v-else>
+                <circle :r="RIPPLE_R" :cx="car2.start.px" :cy="car2.start.py" fill="#666" opacity="0.2" />
+                <circle :r="CAR_R" :cx="car2.start.px" :cy="car2.start.py" fill="#666" />
+              </template>
+            </template>
+            <template v-else>
+              <circle :r="RIPPLE_R" :cx="car2.start.px" :cy="car2.start.py" :fill="car2.color" opacity="0.25">
+                <animateMotion :dur="`${car2.duration}s`" repeatCount="1" fill="freeze" :path="car2.pathD" />
+              </circle>
+              <circle :r="CAR_R" :cx="car2.start.px" :cy="car2.start.py" :fill="car2.color">
+                <animateMotion :dur="`${car2.duration}s`" repeatCount="1" fill="freeze" :path="car2.pathD" />
+              </circle>
+            </template>
+          </svg>
+          <div v-else class="map-placeholder">
+            <div class="placeholder-text">车2 地图未同步</div>
+            <div class="placeholder-hint">请运行 <code>python scripts/sync_maps.py</code></div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </template>
 
 <style scoped>
 .cad-scene {
-  position: relative;
+  display: flex;
+  flex-direction: column;
   width: 100%;
   height: 100%;
+  background: #020712;
+}
+.status-bar {
+  flex: 0 0 auto;
+  padding: 4px 12px;
+  background: #0a1525;
+  border-bottom: 1px solid #1a3050;
+  display: flex;
+  justify-content: flex-end;
+}
+.status-tag {
+  font-size: 12px;
+  padding: 2px 10px;
+  border-radius: 8px;
+  font-weight: 600;
+}
+.tag-realtime {
+  color: #6affb0;
+  background: rgba(106, 255, 176, 0.1);
+  border: 1px solid rgba(106, 255, 176, 0.3);
+}
+.tag-waiting {
+  color: #ffaa6a;
+  background: rgba(255, 170, 106, 0.1);
+  border: 1px solid rgba(255, 170, 106, 0.3);
+}
+.tag-demo {
+  color: #ff6a6a;
+  background: rgba(255, 106, 106, 0.1);
+  border: 1px solid rgba(255, 106, 106, 0.3);
 }
 
-.cad-svg {
+.map-row {
+  flex: 1;
+  display: flex;
+  gap: 4px;
+  min-height: 0;
+}
+.map-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: #0a1525;
+  border: 1px solid #1a3050;
+  overflow: hidden;
+  min-width: 0;
+}
+.pane-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  background: linear-gradient(90deg, #0f2540, #0a1525);
+  border-bottom: 1px solid #1a3050;
+}
+.pane-title {
+  color: #5ad8ff;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 1px;
+}
+.pane-tag {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 8px;
+}
+.tag-ok {
+  color: #6affb0;
+  background: rgba(106, 255, 176, 0.1);
+  border: 1px solid rgba(106, 255, 176, 0.3);
+}
+.tag-wait {
+  color: #ffaa6a;
+  background: rgba(255, 170, 106, 0.1);
+  border: 1px solid rgba(255, 170, 106, 0.3);
+}
+.pane-body {
+  flex: 1;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.map-svg {
   display: block;
   width: 100%;
   height: 100%;
 }
-
-/* 所有形状：仅描边、无填充，保持屏幕级清晰并带青色辉光呼应主题 */
-.shape {
-  fill: none;
-  stroke: #ffffff;
-  stroke-width: 2;
-  vector-effect: non-scaling-stroke;
-  filter: drop-shadow(0 0 3px rgba(0, 240, 255, 0.25));
+.map-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: #4a6080;
+  text-align: center;
+  padding: 20px;
 }
-
-/* 车标：绝对定位，translate 居中于 xy 计算出的百分比点 */
-.car-dot {
-  position: absolute;
-  transform: translate(-50%, -50%);
-  width: 16px;
-  height: 16px;
-  pointer-events: none;
-  z-index: 5;
+.placeholder-text {
+  font-size: 18px;
+  color: #6a8090;
+  margin-bottom: 8px;
 }
-.car-dot-core {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  border-radius: 50%;
-  background: #00f0ff;
-  box-shadow: 0 0 8px #00f0ff, 0 0 18px rgba(0, 240, 255, 0.6);
-  animation: car-pulse 1.6s ease-in-out infinite;
+.placeholder-hint {
+  font-size: 13px;
+  color: #3a5070;
+  line-height: 1.6;
 }
-/* 涟漪外环，强化"实时"感 */
-.car-dot::before {
-  content: '';
-  position: absolute;
-  top: -6px;
-  left: -6px;
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  border: 1px solid rgba(0, 240, 255, 0.5);
-  animation: car-ripple 1.6s ease-out infinite;
-}
-@keyframes car-pulse {
-  0%, 100% { transform: scale(1); opacity: 1; }
-  50% { transform: scale(0.82); opacity: 0.8; }
-}
-@keyframes car-ripple {
-  0% { transform: scale(0.7); opacity: 0.8; }
-  100% { transform: scale(1.9); opacity: 0; }
+.placeholder-hint code {
+  background: #1a2540;
+  padding: 2px 6px;
+  border-radius: 3px;
+  color: #5ad8ff;
 }
 </style>

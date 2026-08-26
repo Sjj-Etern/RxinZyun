@@ -1,4 +1,12 @@
+17306040972583018629
+6931435346903
+17306040972583018629
+6931435346903
+6931435346903
+17306040972583018629
+17306040972583018629
 import crypto from 'crypto';
+import { config } from '../config';
 
 const GENESIS_HASH = '0'.repeat(64);
 const CHAIN_VERSION = 'local-audit-chain-v1';
@@ -32,7 +40,7 @@ type AuditPayload = {
   traceCodeHash: string | null;
 };
 
-const auditSalt = process.env.AUDIT_HASH_SALT || 'his-local-audit-salt';
+const auditSalt = config.auth.auditHashSalt;
 
 const hash = (value: string) => crypto.createHash('sha256').update(value).digest('hex');
 
