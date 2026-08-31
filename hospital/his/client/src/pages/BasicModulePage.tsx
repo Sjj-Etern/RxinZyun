@@ -417,9 +417,12 @@ function AuditChainDashboard({
             <span>最近链路</span>
             <h4>存证节点流</h4>
           </div>
-          <small>按时间从左到右串联</small>
+          <div className="audit-chain-panel-meta">
+            <small>按时间从左到右串联</small>
+            <span className="audit-chain-scroll-hint">横向滑动查看 <b aria-hidden="true">→</b></span>
+          </div>
         </div>
-        <div className="audit-chain-visual" aria-label="可信审计存证节点">
+        <div className="audit-chain-visual" aria-label="可信审计存证节点，可横向滚动查看" tabIndex={0}>
           {visibleNodes.length === 0 ? (
             <div className="audit-chain-empty">暂无可信存证记录</div>
           ) : visibleNodes.map((record, index) => {

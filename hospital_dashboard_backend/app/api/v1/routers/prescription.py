@@ -1,8 +1,9 @@
 import pymysql
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from app.core.config import settings
+from app.db.session import engine as LOCAL_ENGINE
 
 router = APIRouter()
 
@@ -17,8 +18,8 @@ HIS_DB_CONFIG = {
     "cursorclass": pymysql.cursors.DictCursor,
 }
 
-# 本地 SQLite 数据库连接（用于查询 prescription_workflow_state）
-LOCAL_ENGINE = create_engine(settings.database_url)
+# 大屏流程状态与事件统一使用 MySQL（与 HIS 共用 hospital 库）。
+# SQLite app.db 仅保留为历史备份，不参与运行时读写。
 
 # 全局标记：MySQL 是否可用
 _mysql_available = None
@@ -267,13 +268,17 @@ def get_prescription_stats():
 @router.get("/prescriptions/progress")
 def get_prescriptions_progress(limit: int = 20):
     """
-    获取每个处方的4节点进度条数据
+    获取每个处方的4节点进度条数据 + 15节点时间线数据
 
     每个处方对应一条进度条：
     - 节点1（开具处方）：药师确认处方后高亮
     - 节点2（任务确认）：ROS 任务启动后高亮（优先使用 prescription_workflow_state 表）
     - 节点3（扫码复合）：当前处方全部追溯码扫到第2次后高亮
     - 节点4（站台交互）：当前处方全部追溯码第二次实际扫码完成后高亮（写入 scan3_time）
+
+    另返回 timeline 字段：基于 workflow_events 事件流水推导的 15 节点竖向时间线
+    （阶段一 处方流转 / 阶段二 跨梯运输 / 阶段三 交付确认）。
+    历史处方（部署前创建）无事件记录，timeline 各节点为 pending，前端兜底显示旧 4 节点。
 
     返回每个处方的 prescription_code、patient_name、各节点状态
     """
@@ -489,6 +494,17 @@ def get_prescriptions_progress(limit: int = 20):
                         },
                     ],
                 })
+
+            # ===== 15 节点时间线（事件流水推导，部署后新处方生效）=====
+            from app.services.workflow_event_service import (
+                get_events_for_prescriptions, build_steps_from_events,
+            )
+            codes = [p["prescription_code"] for p in result if p.get("prescription_code")]
+            events_map = get_events_for_prescriptions(codes)
+            for item in result:
+                events = events_map.get(item.get("prescription_code"), [])
+                item["timeline"] = build_steps_from_events(events)
+                item["timeline_events_count"] = len(events)
 
             return {
                 "total": len(result),

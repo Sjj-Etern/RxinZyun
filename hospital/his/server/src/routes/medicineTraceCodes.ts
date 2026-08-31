@@ -181,7 +181,7 @@ const findTraceCodeByInputForUpdate = async (conn: any, traceCodeInput: unknown)
 };
 
 // 节点3扫码复核完成后通知医院大屏后端，触发车2继续配送。
-// 节点3对应所有追溯码第一次实际扫码完成（scan2_time / scanned_outbound）。
+// 节点3对应所有追溯码第一次实际扫码完成（判定含 scanned_outbound 与 scanned_confirm，防重复扫码破坏计数）。
 function notifyBackendNode3Completed(prescriptionCode: string): void {
   const base = config.services.hospitalBackendUrl;
   const target = new URL(`${base}/workflow/pharmacist-success-trigger`);
@@ -211,13 +211,80 @@ function notifyBackendNode3Completed(prescriptionCode: string): void {
   req.end();
 }
 
+// 扫码进度通知：每次出库扫码后向大屏后端推送进度（已扫第几个/共几个），供大屏 N5 节点实时显示
+function notifyBackendScanProgress(prescriptionCode: string, scanned: number, total: number, medicineName: string): void {
+  const base = config.services.hospitalBackendUrl;
+  const target = new URL(`${base}/workflow/scan-progress`);
+  const body = JSON.stringify({ prescription_code: prescriptionCode, scanned, total, medicine_name: medicineName });
+  const transport = target.protocol === 'https:' ? https : http;
+  const req = transport.request({
+    hostname: target.hostname,
+    port: Number(target.port) || (target.protocol === 'https:' ? 443 : 80),
+    path: target.pathname + target.search,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+    timeout: config.services.hospitalBackendTimeoutMs,
+  }, (response) => {
+    let raw = '';
+    response.setEncoding('utf8');
+    response.on('data', (chunk) => { raw += chunk; });
+    response.on('end', () => {
+      console.log(`[扫码进度] 大屏后端响应 ${response.statusCode}: ${raw}`);
+    });
+  });
+  req.on('error', (error) => console.error(`[扫码进度] 通知大屏后端失败: ${error.message}`));
+  req.on('timeout', () => {
+    req.destroy();
+    console.error('[扫码进度] 通知大屏后端超时');
+  });
+  req.write(body);
+  req.end();
+}
+
+// 每次出库扫码（未全部完成时）向大屏后端推送扫码进度
+async function checkScanProgressAndNotify(conn: any, prescriptionId: number | null, medicineId: number | null): Promise<void> {
+  if (!prescriptionId) return;
+  try {
+    const [countRows] = await conn.query(
+      `SELECT COUNT(*) AS total,
+              SUM(CASE WHEN status IN ('scanned_outbound', 'scanned_confirm') THEN 1 ELSE 0 END) AS scanned
+       FROM medicine_trace_codes
+       WHERE prescription_id = ?`,
+      [prescriptionId]
+    );
+    const total = Number(countRows[0]?.total || 0);
+    const scanned = Number(countRows[0]?.scanned || 0);
+    if (total === 0 || scanned >= total) return; // 全部扫完由节点3完成通知处理
+
+    const [codeRows] = await conn.query(
+      'SELECT prescription_code FROM prescriptions WHERE id = ?', [prescriptionId]
+    );
+    const prescriptionCode = codeRows[0]?.prescription_code;
+    if (!prescriptionCode) return;
+
+    let medicineName = '';
+    if (medicineId) {
+      const [medRows] = await conn.query(
+        'SELECT name FROM medicines WHERE id = ?', [medicineId]
+      );
+      medicineName = medRows[0]?.name || '';
+    }
+    console.log(`[扫码进度] 处方 ${prescriptionCode} 已扫 ${scanned}/${total}（最近：${medicineName}），通知大屏后端`);
+    notifyBackendScanProgress(prescriptionCode, scanned, total, medicineName);
+  } catch (error: any) {
+    console.error(`[扫码进度] 检查或通知失败: ${error.message}`);
+  }
+}
+
 async function checkNode3CompletedAndNotify(conn: any, prescriptionId: number | null): Promise<void> {
   if (!prescriptionId) return;
 
   try {
+    // 判定包含 scanned_confirm：只要每个码完成过第一次扫码（无论是否又被第二次扫码推进到确认状态），
+    // 即视为第一轮出库完成。防止药师重复扫码把状态推到 scanned_confirm 后 outbound 计数归零、永不触发。
     const [countRows] = await conn.query(
       `SELECT COUNT(*) AS total,
-              SUM(CASE WHEN status = 'scanned_outbound' THEN 1 ELSE 0 END) AS outbound
+              SUM(CASE WHEN status IN ('scanned_outbound', 'scanned_confirm') THEN 1 ELSE 0 END) AS outbound
        FROM medicine_trace_codes
        WHERE prescription_id = ?`,
       [prescriptionId]
@@ -238,6 +305,67 @@ async function checkNode3CompletedAndNotify(conn: any, prescriptionId: number | 
   } catch (error: any) {
     // 回调失败不回滚已完成的扫码，避免大屏暂时不可用阻塞 HIS。
     console.error(`[节点3完成] 检查或通知失败: ${error.message}`);
+  }
+}
+
+// 节点4扫码全部确认后通知医院大屏后端，触发车2 nurse-success（替代车2 nurse_arrive 消息的编排职责）。
+// 节点4对应所有追溯码第二次实际扫码完成（scan3_time / scanned_confirm）。
+function notifyBackendNode4Completed(prescriptionCode: string): void {
+  const base = config.services.hospitalBackendUrl;
+  const target = new URL(`${base}/workflow/nurse-success-trigger`);
+  const body = JSON.stringify({ prescription_code: prescriptionCode });
+  const transport = target.protocol === 'https:' ? https : http;
+  const req = transport.request({
+    hostname: target.hostname,
+    port: Number(target.port) || (target.protocol === 'https:' ? 443 : 80),
+    path: target.pathname + target.search,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+    timeout: config.services.hospitalBackendTimeoutMs,
+  }, (response) => {
+    let raw = '';
+    response.setEncoding('utf8');
+    response.on('data', (chunk) => { raw += chunk; });
+    response.on('end', () => {
+      console.log(`[节点4完成通知] 大屏后端响应 ${response.statusCode}: ${raw}`);
+    });
+  });
+  req.on('error', (error) => console.error(`[节点4完成通知] 通知大屏后端失败: ${error.message}`));
+  req.on('timeout', () => {
+    req.destroy();
+    console.error('[节点4完成通知] 通知大屏后端超时');
+  });
+  req.write(body);
+  req.end();
+}
+
+async function checkNode4CompletedAndNotify(conn: any, prescriptionId: number | null): Promise<void> {
+  if (!prescriptionId) return;
+
+  try {
+    const [countRows] = await conn.query(
+      `SELECT COUNT(*) AS total,
+              SUM(CASE WHEN status = 'scanned_confirm' THEN 1 ELSE 0 END) AS confirmed
+       FROM medicine_trace_codes
+       WHERE prescription_id = ?`,
+      [prescriptionId]
+    );
+    const total = Number(countRows[0]?.total || 0);
+    const confirmed = Number(countRows[0]?.confirmed || 0);
+    if (total === 0 || confirmed !== total) return;
+
+    const [prescriptionRows] = await conn.query(
+      'SELECT prescription_code FROM prescriptions WHERE id = ?',
+      [prescriptionId]
+    );
+    const prescriptionCode = prescriptionRows[0]?.prescription_code;
+    if (!prescriptionCode) return;
+
+    console.log(`[节点4完成] 处方 ${prescriptionCode} 全部追溯码已完成第二次扫码（${total} 条），通知大屏后端`);
+    notifyBackendNode4Completed(prescriptionCode);
+  } catch (error: any) {
+    // 回调失败不回滚已完成的扫码，避免大屏暂时不可用阻塞 HIS。
+    console.error(`[节点4完成] 检查或通知失败: ${error.message}`);
   }
 }
 
@@ -619,7 +747,14 @@ router.put('/:id/scan', async (req: Request, res: Response) => {
 
     // 第一次实际扫码完成整张处方后，通知大屏后端触发车2 pharmacist-success。
     if (currentStatus === 'pending' || currentStatus === 'scanned_identify') {
+      await checkScanProgressAndNotify(conn, prescriptionId || record.prescription_id, record.medicine_id);
       await checkNode3CompletedAndNotify(conn, prescriptionId || record.prescription_id);
+    }
+    // 节点4扫码全部确认检测：scanned_outbound → scanned_confirm 时检查该处方是否全部确认
+    if (currentStatus === 'scanned_outbound') {
+      // 兜底：若节点3触发时机被错过（如通知失败/重复扫码），第二次扫码时补检（判定含 scanned_confirm）
+      await checkNode3CompletedAndNotify(conn, prescriptionId || record.prescription_id);
+      await checkNode4CompletedAndNotify(conn, prescriptionId || record.prescription_id);
     }
 
     res.json(updated[0]);
@@ -759,7 +894,14 @@ router.post('/scan-by-code', async (req: Request, res: Response) => {
 
     // 第一次实际扫码完成整张处方后，通知大屏后端触发车2 pharmacist-success。
     if (record.status === 'pending' || record.status === 'scanned_identify') {
+      await checkScanProgressAndNotify(conn, record.prescription_id, record.medicine_id);
       await checkNode3CompletedAndNotify(conn, record.prescription_id);
+    }
+    // 节点4扫码全部确认检测：scanned_outbound → scanned_confirm 时检查该处方是否全部确认
+    if (record.status === 'scanned_outbound') {
+      // 兜底：若节点3触发时机被错过（如通知失败/重复扫码），第二次扫码时补检（判定含 scanned_confirm）
+      await checkNode3CompletedAndNotify(conn, record.prescription_id);
+      await checkNode4CompletedAndNotify(conn, record.prescription_id);
     }
 
     res.json({

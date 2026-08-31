@@ -64,8 +64,14 @@ void Lift2UpDown(uint8_t direction,uint8_t step);
 void toFloor(uint8_t nFloor); // 移动到指定楼层（初始位置默认为1楼）
 
 /* ===== 电梯门控制（继电器模拟按键）===== */
-void door_open(void);         // 开门：继电器3吸合50ms后释放
-void door_close(void);        // 关门：继电器4吸合50ms后释放
+void door_open(void);         // 开门：继电器3(GPIO17)吸合50ms后释放
+void door_close(void);        // 关门：继电器4(GPIO18)吸合50ms后释放
+
+/* ===== 电源控制（方案A：持续吸合模式，继电器5@GPIO19串在供电回路）===== */
+void power_init(void);        // 上电初始化电源（默认开机持续供电，POWER_BOOT_DEFAULT可配）
+void power_on(void);          // 开机：继电器5持续吸合（持续供电）
+void power_off(void);         // 关机：继电器5释放（断电）
+bool power_is_on(void);       // 查询当前电源状态（true=供电中）
 
 /* ===== 楼层移动异步任务（避免toFloor阻塞TCP recv循环导致断连）===== */
 void floor_move_task_start(void);      // 启动楼层移动独立任务（app_init调用一次）

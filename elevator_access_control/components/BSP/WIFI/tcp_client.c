@@ -207,8 +207,8 @@ static void tcp_client_task(void *pvParameters)
                     char ack_buf[256];
 
                     if (strcmp(cmd, "open_door") == 0) {
-                        /* 开门：继电器3模拟按键 */
-                        ESP_LOGI(TAG, "[EXEC #%d] open_door → 继电器3吸合50ms→释放", seq);
+                        /* 开门：继电器3模拟按键（IO改版：GPIO17） */
+                        ESP_LOGI(TAG, "[EXEC #%d] open_door → 继电器3(GPIO17)吸合50ms→释放", seq);
                         door_open();
                         ESP_LOGI(TAG, "[HARDWARE #%d] 继电器3 已释放", seq);
                         snprintf(ack_buf, sizeof(ack_buf),
@@ -217,8 +217,8 @@ static void tcp_client_task(void *pvParameters)
                         tcp_client_send_data(ack_buf);
                     }
                     else if (strcmp(cmd, "close_door") == 0) {
-                        /* 关门：继电器4模拟按键 */
-                        ESP_LOGI(TAG, "[EXEC #%d] close_door → 继电器4吸合50ms→释放", seq);
+                        /* 关门：继电器4模拟按键（IO改版：GPIO18） */
+                        ESP_LOGI(TAG, "[EXEC #%d] close_door → 继电器4(GPIO18)吸合50ms→释放", seq);
                         door_close();
                         ESP_LOGI(TAG, "[HARDWARE #%d] 继电器4 已释放", seq);
                         snprintf(ack_buf, sizeof(ack_buf),
@@ -248,14 +248,48 @@ static void tcp_client_task(void *pvParameters)
                             tcp_client_send_data(ack_buf);
                         }
                     }
+                    else if (strcmp(cmd, "power_on") == 0) {
+                        /* 开机：继电器5持续吸合供电（方案A：串在供电回路，IO改版GPIO19） */
+                        ESP_LOGI(TAG, "[EXEC #%d] power_on → 继电器5(GPIO19)持续吸合供电", seq);
+                        power_on();
+                        snprintf(ack_buf, sizeof(ack_buf),
+                            "{\"type\":\"ack\",\"cmd\":\"power_on\",\"status\":\"ok\",\"power\":1,\"seq\":%d}\n", seq);
+                        ESP_LOGI(TAG, "[SEND #%d] %s", seq, ack_buf);
+                        tcp_client_send_data(ack_buf);
+                    }
+                    else if (strcmp(cmd, "power_off") == 0) {
+                        /* 关机：继电器5释放断电 */
+                        ESP_LOGI(TAG, "[EXEC #%d] power_off → 继电器5(GPIO19)释放断电", seq);
+                        power_off();
+                        snprintf(ack_buf, sizeof(ack_buf),
+                            "{\"type\":\"ack\",\"cmd\":\"power_off\",\"status\":\"ok\",\"power\":0,\"seq\":%d}\n", seq);
+                        ESP_LOGI(TAG, "[SEND #%d] %s", seq, ack_buf);
+                        tcp_client_send_data(ack_buf);
+                    }
+                    else if (strcmp(cmd, "power") == 0) {
+                        /* 电源切换：开→关 / 关→开（兼容旧命令，语义由短按改为切换） */
+                        if (power_is_on()) {
+                            ESP_LOGI(TAG, "[EXEC #%d] power(切换) → 当前开机, 执行关机", seq);
+                            power_off();
+                        } else {
+                            ESP_LOGI(TAG, "[EXEC #%d] power(切换) → 当前关机, 执行开机", seq);
+                            power_on();
+                        }
+                        snprintf(ack_buf, sizeof(ack_buf),
+                            "{\"type\":\"ack\",\"cmd\":\"power\",\"status\":\"ok\",\"power\":%d,\"seq\":%d}\n",
+                            power_is_on() ? 1 : 0, seq);
+                        ESP_LOGI(TAG, "[SEND #%d] %s", seq, ack_buf);
+                        tcp_client_send_data(ack_buf);
+                    }
                     else if (strcmp(cmd, "status") == 0) {
-                        /* 查询状态：当前楼层 + DHT11温湿度 */
+                        /* 查询状态：当前楼层 + 电源状态 + DHT11温湿度 */
                         uint8_t temp = 0, humi = 0;
                         dht11_read_data(&temp, &humi);
-                        ESP_LOGI(TAG, "[EXEC #%d] status → 楼层=%d, DHT11: temp=%d°C, humi=%d%%", seq, Floor_Num, temp, humi);
+                        ESP_LOGI(TAG, "[EXEC #%d] status → 楼层=%d, 电源=%s, DHT11: temp=%d°C, humi=%d%%",
+                            seq, Floor_Num, power_is_on() ? "开机" : "关机", temp, humi);
                         snprintf(ack_buf, sizeof(ack_buf),
-                            "{\"type\":\"ack\",\"cmd\":\"status\",\"status\":\"ok\",\"floor\":%d,\"temp\":%d,\"humi\":%d,\"seq\":%d}\n",
-                            Floor_Num, temp, humi, seq);
+                            "{\"type\":\"ack\",\"cmd\":\"status\",\"status\":\"ok\",\"floor\":%d,\"power\":%d,\"temp\":%d,\"humi\":%d,\"seq\":%d}\n",
+                            Floor_Num, power_is_on() ? 1 : 0, temp, humi, seq);
                         ESP_LOGI(TAG, "[SEND #%d] %s", seq, ack_buf);
                         tcp_client_send_data(ack_buf);
                     }

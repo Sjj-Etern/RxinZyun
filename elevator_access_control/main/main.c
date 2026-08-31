@@ -191,7 +191,8 @@ void app_init(void){
 
     new_emission_init();                /* 初始化REMOTE */    
     uint8_t err = dht11_init();                 /* 初始化DHT11数字温湿度传感器 */
-    relay_init_all();               //  继电器初始化  
+    relay_init_all();               //  继电器初始化
+    power_init();                   //  电源上电初始化（方案A：默认开机，继电器5@GPIO19持续吸合供电）
 
     // --------------- WIFI 初始化 ----------------------------
     wifi_sta_init();    // 初始化并连接wifi

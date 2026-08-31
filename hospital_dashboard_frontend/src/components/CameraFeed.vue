@@ -10,34 +10,28 @@ const props = defineProps({
 // 从 .env 读取加载阈值（带默认值）
 const CONNECT_TIMEOUT = Number(import.meta.env.VITE_CAMERA_CONNECT_TIMEOUT) || 5000
 // 探测失败后的静默重试间隔（毫秒）：摄像头恢复后自动切回实时流
-const RETRY_INTERVAL = 30000
+const RETRY_INTERVAL = 10000
 
 // 播放模式：video = 备用视频（默认，永远有画面）；live = 实时流
 const mode = ref('video')
-const probeKey = ref(0)
-const liveKey = ref(0)
+const streamKey = ref(0)
 
 let probeTimer = null   // 探测超时计时器
 let retryTimer = null   // 周期重试计时器
 let disposed = false
 
-// 当前探测用隐藏图 URL（带时间戳防缓存）
-const probeUrl = computed(() => {
+// 当前实时流 URL（带时间戳防缓存）。隐藏探测与展示复用同一个 img，避免建立两条流连接。
+const streamUrl = computed(() => {
   const separator = props.streamUrl.includes('?') ? '&' : '?'
-  return `${props.streamUrl}${separator}t=${probeKey.value}`
+  return `${props.streamUrl}${separator}t=${streamKey.value}`
 })
 
-// 当前实时流 URL（仅在切换到 live 后挂载显示）
-const liveUrl = computed(() => {
-  const separator = props.streamUrl.includes('?') ? '&' : '?'
-  return `${props.streamUrl}${separator}t=${liveKey.value}`
-})
-
-// 静默探测实时流：隐藏 img 尝试加载，首帧到达 = 摄像头在线
+// 静默探测实时流：隐藏 img 尝试加载，首帧到达 = 摄像头在线。
+// 探测成功后直接显示同一条连接，避免 ROS/Flask 服务被双连接占用。
 const startProbe = () => {
   if (disposed) return
   stopTimers()
-  probeKey.value = Date.now()
+  streamKey.value = Date.now()
   probeTimer = setTimeout(() => {
     // 超时未收到首帧：保持备用视频，安排下次静默重试
     scheduleRetry()
@@ -59,21 +53,16 @@ const scheduleRetry = () => {
 const handleProbeLoad = () => {
   if (disposed) return
   stopTimers()
-  liveKey.value = Date.now()
   mode.value = 'live'
   console.log(`[${props.title}] 实时流已接通`)
 }
 
-// 探测失败：静默保持备用视频，稍后重试（无任何 UI 提示）
-const handleProbeError = () => {
-  scheduleRetry()
-}
-
-// 实时流中断：静默切回备用视频并恢复探测
-const handleLiveError = () => {
-  if (mode.value !== 'live') return
-  mode.value = 'video'
-  console.log(`[${props.title}] 实时流中断，已无缝切回备用画面`)
+// 流请求失败或中断：静默保持/切回备用视频，并恢复探测。
+const handleStreamError = () => {
+  if (mode.value === 'live') {
+    mode.value = 'video'
+    console.log(`[${props.title}] 实时流中断，已无缝切回备用画面`)
+  }
   scheduleRetry()
 }
 
@@ -102,14 +91,15 @@ watch(() => props.streamUrl, () => {
     <div class="panel-body camera-body">
       <div class="camera-viewfinder"></div>
 
-      <!-- 实时流（探测成功后显示；中断即卸载，无感切回备用视频） -->
+      <!-- 实时流：探测成功后显示同一条连接；中断即切回备用视频 -->
       <img
-        v-if="mode === 'live'"
-        :key="liveKey"
-        :src="liveUrl"
+        :key="streamKey"
+        :src="streamUrl"
         alt=""
-        class="video-feed"
-        @error="handleLiveError"
+        class="video-feed live-stream"
+        :class="{ 'live-stream--hidden': mode !== 'live' }"
+        @load="handleProbeLoad"
+        @error="handleStreamError"
       />
 
       <!-- 备用视频（默认画面，循环播放，永远有内容） -->
@@ -124,16 +114,6 @@ watch(() => props.streamUrl, () => {
         <source :src="fallbackVideo" type="video/mp4">
       </video>
 
-      <!-- 隐藏探测图：不占布局，仅用于判断摄像头是否在线 -->
-      <img
-        v-if="mode !== 'live'"
-        :key="probeKey"
-        :src="probeUrl"
-        alt=""
-        style="position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none;"
-        @load="handleProbeLoad"
-        @error="handleProbeError"
-      />
     </div>
   </div>
 </template>
@@ -214,5 +194,12 @@ watch(() => props.streamUrl, () => {
   object-fit: cover;
   position: relative;
   z-index: 2;
+}
+.live-stream--hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
 }
 </style>

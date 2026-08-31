@@ -20,6 +20,7 @@
 
 #include "emission.h"
 #include "relay.h"
+#include "tcp_client.h"
 
 /* 保存NEC解码的地址和命令字节 */
 uint16_t s_nec_code_address;
@@ -61,13 +62,12 @@ void toFloor(uint8_t nFloor) {
         return;
     }
 
-    // 2. 有线继电器按钮模拟（先按下目标楼层按钮）
+    // 2. 有线继电器按钮模拟（先按下目标楼层按钮，IO改版：业务只接2楼/4楼）
     int8_t relay = -1;
     switch (nFloor) {
-        case 1: relay = 3; break;   // 1楼 → 继电器3（GPIO3）
-        case 3: relay = 1; break;   // 3楼 → 继电器1（GPIO9）
-        case 5: relay = 2; break;   // 5楼 → 继电器2（GPIO10）
-        default: relay = -1; break; // 2楼暂未接线
+        case 2: relay = 1; break;   // 2楼 → 继电器1（GPIO9）
+        case 4: relay = 2; break;   // 4楼 → 继电器2（GPIO10）
+        default: relay = -1; break; // 1/3/5楼未接线，跳过按键，仅红外移动
     }
     printf("[FLOOR] 有线地板选择：%d->%d，继电器 = %d\n", Floor_Num, nFloor, relay);
     if (relay > 0) {
@@ -117,6 +117,12 @@ static void floor_move_task(void *arg)
             ESP_LOGI("FLOOR_TASK", "异步执行楼层移动 → %d楼", target);
             toFloor(target);
             ESP_LOGI("FLOOR_TASK", "楼层移动完成, 当前楼层=%d", Floor_Num);
+            /* 楼层移动真实完成上报：后端据此立即发送 lift-open（替代后端 sleep 估算） */
+            char arrive_buf[96];
+            snprintf(arrive_buf, sizeof(arrive_buf),
+                "{\"type\":\"floor_arrived\",\"floor\":%d}\n", Floor_Num);
+            tcp_client_send_data(arrive_buf);
+            ESP_LOGI("FLOOR_TASK", "已上报楼层到达: %d楼", Floor_Num);
         }
     }
 }
@@ -139,14 +145,14 @@ void request_go_floor(uint8_t floor)
 }
 
 
-/* ===== 电梯门控制（继电器模拟按键）===== */
+/* ===== 电梯门控制（继电器模拟按键，IO改版：开门=继电器3@GPIO17，关门=继电器4@GPIO18）===== */
 
 /**
  * 开门：继电器3吸合50ms后释放（模拟按下开门键）
- * 接线：继电器3 → 橙-棕白（开门线）
+ * 接线（IO改版）：继电器3 → GPIO17 → 开门键
  */
 void door_open(void){
-    printf("[DOOR] 开门: 继电器3吸合 → ");
+    printf("[DOOR] 开门: 继电器3(GPIO17)吸合 → ");
     relay_on(3);
     printf("ON(50ms) → ");
     vTaskDelay(pdMS_TO_TICKS(50));
@@ -156,15 +162,57 @@ void door_open(void){
 
 /**
  * 关门：继电器4吸合50ms后释放（模拟按下关门键）
- * 接线：继电器4 → 黄-棕白（关门线）
+ * 接线（IO改版）：继电器4 → GPIO18 → 关门键
  */
 void door_close(void){
-    printf("[DOOR] 关门: 继电器4吸合 → ");
+    printf("[DOOR] 关门: 继电器4(GPIO18)吸合 → ");
     relay_on(4);
     printf("ON(50ms) → ");
     vTaskDelay(pdMS_TO_TICKS(50));
     relay_off(4);
     printf("OFF → 完成\n");
+}
+
+/**
+ * ===== 电源控制（方案A：持续吸合模式）=====
+ * 接线（IO改版）：继电器5 → GPIO19 → 串在供电回路（继电器触点=电源总开关）
+ * 语义：吸合 = 持续供电（开机），释放 = 断电（关机）
+ * 修复历史：原50ms短按导致设备"红灯闪一下即灭"无法开机（2026-08-30）
+ */
+#define POWER_RELAY_NUM     5       /* 电源继电器编号 */
+#define POWER_BOOT_DEFAULT  1       /* ESP32上电默认电源状态：1=开机(持续吸合) 0=关机 */
+
+static bool s_power_state = false;  /* 当前电源状态（true=供电中） */
+
+/* 上电初始化电源（app_init中relay_init_all之后调用，默认开机持续供电） */
+void power_init(void){
+    if (POWER_BOOT_DEFAULT) {
+        relay_on(POWER_RELAY_NUM);
+        s_power_state = true;
+        printf("[POWER] 上电默认开机: 继电器5(GPIO19)持续吸合供电\n");
+    } else {
+        s_power_state = false;
+        printf("[POWER] 上电默认关机: 继电器5(GPIO19)保持断开\n");
+    }
+}
+
+/* 开机：继电器5持续吸合（不释放），设备持续得电 */
+void power_on(void){
+    relay_on(POWER_RELAY_NUM);
+    s_power_state = true;
+    printf("[POWER] 开机: 继电器5(GPIO19)持续吸合 → 供电保持\n");
+}
+
+/* 关机：继电器5释放，设备断电 */
+void power_off(void){
+    relay_off(POWER_RELAY_NUM);
+    s_power_state = false;
+    printf("[POWER] 关机: 继电器5(GPIO19)释放 → 断电\n");
+}
+
+/* 查询当前电源状态（true=供电中） */
+bool power_is_on(void){
+    return s_power_state;
 }
  
 

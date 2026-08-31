@@ -58,3 +58,30 @@ class PrescriptionWorkflowState(Base):
     __table_args__ = (
         Index('idx_prescription_code', 'prescription_code'),
     )
+
+
+class WorkflowEvent(Base):
+    """
+    处方流程事件流水表
+    记录每个处方在全流程 15 个节点上的真实通信事件（何时发生、来源）
+
+    事件来源 source：
+    - his         HIS 系统通知（HTTP）
+    - car1        车1 ROS topic（/car01_pub）
+    - car2        车2 ROS topic（/car02_pub）
+    - elevator    电梯 ESP32（TCP）
+    - system      系统内部编排
+    """
+    __tablename__ = "workflow_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    prescription_code = Column(String(50), nullable=False, index=True)
+    event_key = Column(String(50), nullable=False)   # 事件键（15节点之一）
+    source = Column(String(20), nullable=False)      # 事件来源
+    detail = Column(String(200), nullable=True)      # 补充说明（中文）
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index('idx_we_code_key', 'prescription_code', 'event_key'),
+        Index('idx_we_created', 'created_at'),
+    )

@@ -1,5 +1,8 @@
 import { Router, Request, Response } from 'express';
+import http from 'http';
+import https from 'https';
 import pool from '../db';
+import { config } from '../config';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { appendAuditRecord } from '../services/auditChain';
 import { ensureDeliverySchema } from '../services/deliverySchema';
@@ -8,6 +11,39 @@ const router = Router();
 router.use(authMiddleware);
 
 const PRESCRIPTION_ITEM_COUNT = 5;
+
+// 删除处方后通知大屏后端清空该处方的节点数据（workflow_events 等，不做存储）
+// 失败仅打日志，不回滚删除（大屏后端暂不可用不应阻塞 HIS 删除）
+function notifyBackendPrescriptionDeleted(prescriptionCodes: string[]): void {
+  for (const prescriptionCode of prescriptionCodes) {
+    const base = config.services.hospitalBackendUrl;
+    const target = new URL(`${base}/workflow/prescription-events`);
+    const body = JSON.stringify({ prescription_code: prescriptionCode });
+    const transport = target.protocol === 'https:' ? https : http;
+    const req = transport.request({
+      hostname: target.hostname,
+      port: Number(target.port) || (target.protocol === 'https:' ? 443 : 80),
+      path: target.pathname + target.search,
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+      timeout: config.services.hospitalBackendTimeoutMs,
+    }, (response) => {
+      let raw = '';
+      response.setEncoding('utf8');
+      response.on('data', (chunk) => { raw += chunk; });
+      response.on('end', () => {
+        console.log(`[处方删除联动] 大屏后端响应 ${response.statusCode}: ${raw}`);
+      });
+    });
+    req.on('error', (error) => console.error(`[处方删除联动] 通知大屏后端失败（${prescriptionCode}）: ${error.message}`));
+    req.on('timeout', () => {
+      req.destroy();
+      console.error(`[处方删除联动] 通知大屏后端超时（${prescriptionCode}）`);
+    });
+    req.write(body);
+    req.end();
+  }
+}
 
 type PrescriptionItemPayload = {
   medicine_id?: number;
@@ -463,8 +499,13 @@ router.delete('/all', async (_req: Request, res: Response) => {
       );
     }
     await conn.query('DELETE FROM prescription_items');
+    const [codesRows] = await conn.query<any[]>('SELECT prescription_code FROM prescriptions');
+    const deletedCodes = codesRows.map((row) => row.prescription_code).filter(Boolean);
     const [result] = await conn.query('DELETE FROM prescriptions');
     await conn.commit();
+
+    // 联动清空大屏后端该处方的节点数据（删除失败不影响 HIS 删除结果）
+    notifyBackendPrescriptionDeleted(deletedCodes);
 
     res.json({ message: `已删除 ${(result as any).affectedRows || 0} 条处方，已删除 ${traceCodeIds.length} 个关联追溯码` });
   } catch (err: any) {
@@ -531,8 +572,17 @@ router.delete('/:id', async (req: Request, res: Response) => {
       );
     }
     await conn.query('DELETE FROM prescription_items WHERE prescription_id = ?', [id]);
+    const [codeRows] = await conn.query<any[]>(
+      'SELECT prescription_code FROM prescriptions WHERE id = ?', [id]
+    );
+    const deletedCode = codeRows[0]?.prescription_code;
     await conn.query('DELETE FROM prescriptions WHERE id = ?', [id]);
     await conn.commit();
+
+    // 联动清空大屏后端该处方的节点数据（删除失败不影响 HIS 删除结果）
+    if (deletedCode) {
+      notifyBackendPrescriptionDeleted([deletedCode]);
+    }
 
     res.json({ message: `处方已删除，已删除 ${traceCodeIds.length} 个关联追溯码` });
   } catch (err: any) {

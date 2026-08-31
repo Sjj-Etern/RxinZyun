@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 
 // 从环境变量读取配置
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8080'
@@ -10,6 +10,13 @@ const PRESCRIPTION_LIMIT = parseInt(import.meta.env.VITE_PRESCRIPTION_LIMIT_PROG
 const prescriptions = ref([])
 const loading = ref(false)
 const error = ref('')
+
+// 15 节点的阶段分组（竖向时间线按阶段分段展示）
+const PHASES = [
+  { name: '处方流转', range: [0, 5] },    // N1-N5
+  { name: '跨梯运输', range: [5, 12] },    // N6-N12
+  { name: '交付确认', range: [12, 15] },   // N13-N15
+]
 
 // API轮询：获取处方进度（失败时保留已有数据，不清空）
 const fetchProgress = async () => {
@@ -46,13 +53,33 @@ onUnmounted(() => {
   if (timer) clearInterval(timer)
 })
 
-// 获取节点状态对应的CSS类
-const getStepClass = (step) => {
-  return {
-    'completed': step.status === 'completed',
-    'active': step.status === 'active',
-    'pending': step.status === 'pending',
-  }
+// 按阶段切分时间线节点
+const getPhases = (presc) => {
+  const timeline = presc.timeline || []
+  return PHASES.map((ph, i) => {
+    const nodes = timeline.slice(ph.range[0], ph.range[1])
+    const done = nodes.filter(n => n.status === 'completed').length
+    return {
+      key: i,
+      name: ph.name,
+      nodes,
+      done,
+      total: nodes.length,
+    }
+  }).filter(ph => ph.nodes.length > 0)
+}
+
+// 当前选中的处方（默认第一个进行中的，否则第一个）
+const selectedCode = ref('')
+const selectedPresc = computed(() => {
+  if (!prescriptions.value.length) return null
+  const active = prescriptions.value.find(p => p.status === 'approved')
+  const target = prescriptions.value.find(p => p.prescription_code === selectedCode.value)
+  return target || active || prescriptions.value[0]
+})
+
+const selectPresc = (presc) => {
+  selectedCode.value = presc.prescription_code
 }
 </script>
 
@@ -78,55 +105,76 @@ const getStepClass = (step) => {
           <span>{{ error }}</span>
         </div>
 
-        <!-- 处方进度条列表 -->
-        <div v-if="prescriptions.length > 0" class="prescription-list">
-          <div
+        <!-- 处方选择器（横向药丸） -->
+        <div v-if="prescriptions.length > 0" class="presc-tabs">
+          <button
             v-for="presc in prescriptions"
             :key="presc.prescription_id"
-            class="prescription-row"
+            class="presc-tab"
+            :class="{ selected: selectedPresc && presc.prescription_code === selectedPresc.prescription_code }"
+            @click="selectPresc(presc)"
           >
-            <!-- 左侧：处方码 -->
-            <div class="presc-info">
-              <span class="presc-code">{{ presc.prescription_code || '*' + presc.prescription_id }}</span>
-              <span class="presc-patient">{{ presc.patient_name || '-' }}</span>
+            <span class="tab-code">{{ presc.prescription_code || '*' + presc.prescription_id }}</span>
+            <span class="tab-patient">{{ presc.patient_name || '-' }}</span>
+          </button>
+        </div>
+
+        <!-- ===== 竖向 15 节点时间线 ===== -->
+        <div v-if="selectedPresc" class="timeline">
+          <div
+            v-for="phase in getPhases(selectedPresc)"
+            :key="phase.key"
+            class="phase-group"
+          >
+            <div class="phase-header">
+              <span class="phase-name">{{ phase.name }}</span>
+              <span class="phase-badge">{{ phase.done }}/{{ phase.total }}</span>
             </div>
 
-            <!-- 右侧：4节点进度条 -->
-            <div class="presc-steps-wrapper">
-              <div class="steps">
-                <!-- 进度条背景线 -->
-                <div class="steps-progress" :style="{ width: presc.progress + '%' }"></div>
-
-                <!-- 4个节点 -->
-                <div
-                  v-for="step in presc.steps"
-                  :key="step.id"
-                  class="step-item"
-                  :class="getStepClass(step)"
-                >
-                  <div class="step-num">{{ step.id }}</div>
-                  <div class="step-content">
-                    <span class="step-title">{{ step.name }}</span>
-                    <span v-if="step.desc" class="step-desc">{{ step.desc }}</span>
+            <div class="phase-body">
+              <div
+                v-for="(node, ni) in phase.nodes"
+                :key="node.id"
+                class="tl-node"
+                :class="[node.status, { 'last-in-phase': ni === phase.nodes.length - 1 }]"
+              >
+                <!-- 左列：圆点 + 连接线 -->
+                <div class="tl-rail">
+                  <div class="tl-dot">
+                    <svg v-if="node.status === 'completed'" class="dot-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+                    </svg>
                   </div>
+                  <div v-if="ni < phase.nodes.length - 1" class="tl-line"></div>
+                </div>
+
+                <!-- 右列：名称 + 说明 + 时间 -->
+                <div class="tl-content">
+                  <div class="tl-title-row">
+                    <span class="tl-title">{{ node.name }}</span>
+                    <span v-if="node.time" class="tl-time">{{ node.time }}</span>
+                  </div>
+                  <span v-if="node.desc" class="tl-desc">{{ node.desc }}</span>
                 </div>
               </div>
             </div>
           </div>
         </div>
+
+
       </div>
     </div>
   </div>
 </template>
 
 <style scoped>
-.right-panel-wrapper { 
-  flex: 1; min-height: 0; display: flex; flex-direction: column; 
+.right-panel-wrapper {
+  flex: 1; min-height: 0; display: flex; flex-direction: column;
 }
 
 .panel {
   background: var(--bg-panel);
-  border-radius: 0; 
+  border-radius: 0;
   border: var(--panel-border);
   display: flex; flex-direction: column; overflow: hidden;
   position: relative;
@@ -144,11 +192,11 @@ const getStepClass = (step) => {
 .panel-header {
   height: 38px; padding: 0 16px; flex-shrink: 0;
   display: flex; align-items: center; gap: 8px;
-  border-bottom: var(--panel-border); 
-  border-left: 3px solid var(--theme-cyan); 
+  border-bottom: var(--panel-border);
+  border-left: 3px solid var(--theme-cyan);
   background: rgba(0, 240, 255, 0.02);
 }
-.panel-header .title { 
+.panel-header .title {
   font-size: 15px; font-weight: 700; color: #ffffff;
   line-height: 1.1;
   font-family: 'Noto Sans SC', sans-serif;
@@ -163,8 +211,8 @@ const getStepClass = (step) => {
   font-family: 'Rajdhani', sans-serif;
 }
 
-.panel-body { 
-  flex: 1; overflow: hidden; position: relative; min-height: 0; display: flex; flex-direction: column; 
+.panel-body {
+  flex: 1; overflow: hidden; position: relative; min-height: 0; display: flex; flex-direction: column;
 }
 
 .scroll-container {
@@ -189,78 +237,121 @@ const getStepClass = (step) => {
   color: var(--theme-orange);
 }
 
-/* 处方列表 */
-.prescription-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+/* ===== 处方选择器 ===== */
+.presc-tabs {
+  display: flex; gap: 8px; overflow-x: auto; flex-shrink: 0;
+  padding-bottom: 4px;
+}
+.presc-tabs::-webkit-scrollbar { height: 3px; }
+.presc-tabs::-webkit-scrollbar-thumb { background: var(--theme-cyan); }
+
+.presc-tab {
+  flex-shrink: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
+  padding: 5px 10px; cursor: pointer;
+  background: var(--bg-panel-sub); border: var(--panel-border);
+  border-left: 2px solid transparent;
+  transition: border-color 0.2s, background 0.2s;
+}
+.presc-tab:hover { border-left-color: var(--theme-cyan); }
+.presc-tab.selected {
+  border-left-color: var(--theme-cyan);
+  background: rgba(0, 240, 255, 0.06);
+}
+.tab-code {
+  font-family: 'Share Tech Mono', monospace; font-size: 10px; font-weight: 700;
+  color: var(--theme-cyan);
+}
+.tab-patient { font-size: 12px; font-weight: 700; color: #ffffff; }
+
+/* ===== 竖向 15 节点时间线 ===== */
+.timeline {
+  display: flex; flex-direction: column; gap: 10px; flex-shrink: 0;
 }
 
-/* 药品追踪行 */
-.prescription-row {
-  display: flex; align-items: center; gap: 12px; padding: 12px 14px;
-  background: var(--bg-panel-sub); border-radius: 0;
-  border: var(--panel-border);
-  flex-shrink: 0;
+.phase-group {
+  background: var(--bg-panel-sub); border: var(--panel-border);
 }
 
-.presc-info { 
-  display: flex; flex-direction: column; gap: 2px; min-width: 60px; 
+.phase-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 12px;
+  border-bottom: var(--panel-border);
+  border-left: 2px solid var(--theme-cyan);
+  background: rgba(0, 240, 255, 0.02);
 }
-.presc-code { 
-  font-family: 'Share Tech Mono', monospace; font-size: 12px; font-weight: 700; color: var(--theme-cyan); 
+.phase-name {
+  font-size: 12px; font-weight: 700; color: var(--text-main);
+  letter-spacing: 1px;
 }
-.presc-patient { 
-  font-size: 16px; font-weight: 700; color: #ffffff; 
-}
-
-.presc-steps-wrapper { 
-  flex: 1; min-width: 0; 
-}
-
-/* 进度线 */
-.steps { 
-  display: flex; align-items: flex-start; justify-content: space-between; width: 100%; position: relative; 
-}
-.steps::before { 
-  content: ''; position: absolute; top: 10px; left: 8px; right: 8px; height: 1.5px; background: rgba(255,255,255,0.08); z-index: 1; 
-}
-.steps-progress { 
-  position: absolute; top: 10px; left: 8px; height: 1.5px; background: var(--theme-cyan); z-index: 1; 
+.phase-badge {
+  font-size: 10px; font-weight: 700; font-family: 'Rajdhani', sans-serif;
+  color: var(--theme-cyan);
 }
 
-.step-item { 
-  display: flex; flex-direction: column; align-items: center; position: relative; z-index: 2; flex: 1; 
+.phase-body { padding: 8px 12px 4px; }
+
+.tl-node {
+  display: flex; gap: 10px;
 }
-.step-item.pending { 
-  opacity: 0.3; 
+.tl-node.pending { opacity: 0.35; }
+
+.tl-rail {
+  display: flex; flex-direction: column; align-items: center;
+  width: 16px; flex-shrink: 0;
 }
-.step-num {
-  width: 20px; height: 20px; border-radius: 50%; background: #020712;
-  border: 1.5px solid var(--text-muted); color: var(--text-sub);
+.tl-dot {
+  width: 13px; height: 13px; border-radius: 50%;
+  background: #020712; border: 1.5px solid var(--text-muted);
   display: flex; align-items: center; justify-content: center;
-  font-size: 11px; font-weight: 700; font-family: 'Share Tech Mono', monospace;
+  flex-shrink: 0; margin-top: 2px;
+  box-sizing: border-box;
 }
-.step-item.completed .step-num { 
-  background: var(--theme-green); border-color: var(--theme-green); color: #020712; 
+.tl-dot .dot-check { width: 8px; height: 8px; }
+
+.tl-line {
+  width: 1.5px; flex: 1; min-height: 14px; margin: 2px 0;
+  background: rgba(255, 255, 255, 0.1);
 }
-.step-item.active .step-num { 
-  background: var(--theme-cyan); border-color: var(--theme-cyan); color: #020712; box-shadow: 0 0 8px rgba(0,240,255,0.5); 
+.tl-node.completed .tl-line {
+  background: var(--theme-cyan);
+}
+.tl-node.last-in-phase .tl-line { display: none; }
+
+.tl-node.completed .tl-dot {
+  background: var(--theme-green); border-color: var(--theme-green); color: #020712;
+}
+.tl-node.active .tl-dot {
+  background: var(--theme-cyan); border-color: var(--theme-cyan); color: #020712;
+  box-shadow: 0 0 8px rgba(0, 240, 255, 0.6);
+  animation: dot-breath 1.6s ease-in-out infinite;
+}
+@keyframes dot-breath {
+  0%, 100% { box-shadow: 0 0 4px rgba(0, 240, 255, 0.35); }
+  50% { box-shadow: 0 0 12px rgba(0, 240, 255, 0.8); }
 }
 
-.step-content { 
-  margin-top: 4px; text-align: center; 
+.tl-content {
+  flex: 1; min-width: 0; padding-bottom: 8px;
 }
-.step-title { 
-  display: block; font-size: 11px; color: var(--text-sub); 
+.tl-title-row {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
 }
-.step-desc { 
-  display: block; font-size: 9px; color: var(--theme-cyan); font-weight: 700; margin-top: 1px; 
+.tl-title {
+  font-size: 12px; font-weight: 700; color: var(--text-sub);
 }
-.step-item.active .step-title { 
-  color: var(--theme-cyan); 
+.tl-node.active .tl-title { color: var(--theme-cyan); }
+.tl-node.completed .tl-title { color: var(--text-main); }
+
+.tl-time {
+  font-family: 'Share Tech Mono', monospace; font-size: 10px;
+  color: var(--text-muted); flex-shrink: 0;
 }
-.step-item.completed .step-title { 
-  color: var(--text-main); 
+.tl-node.active .tl-time { color: var(--theme-cyan); }
+
+.tl-desc {
+  display: block; font-size: 10px; color: var(--theme-cyan);
+  font-weight: 700; margin-top: 1px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+
 </style>

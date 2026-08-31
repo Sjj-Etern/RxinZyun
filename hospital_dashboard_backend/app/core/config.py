@@ -32,16 +32,15 @@ class Settings(BaseSettings):
     )
 
     # ===== 应用基础配置 =====
-    app_name: str = "Medicine API Server"
-    database_url: str = "sqlite:///./app.db"
+    app_name: str
 
     # ===== MySQL 数据库配置（直接连接）=====
     # 说明：大屏系统直接连接MySQL数据库，与HIS系统共享同一数据库
-    mysql_host: str = "localhost"
-    mysql_port: int = 3306
-    mysql_user: str = "root"
-    mysql_pass: str = "527725"
-    mysql_db: str = "hospital"
+    mysql_host: str
+    mysql_port: int
+    mysql_user: str
+    mysql_pass: str
+    mysql_db: str
 
     # 兼容别名（部分代码使用 his_mysql_* 前缀）
     @property
@@ -65,55 +64,59 @@ class Settings(BaseSettings):
         return self.mysql_db
 
     # ===== 海康摄像头配置（RTSP） =====
-    camera_host: str = "10.111.113.4"
-    camera_port: int = 554
-    camera_user: str = "admin"
-    camera_password: str = "Gsydj666"
-    camera_stream_path: str = "/Streaming/Channels/101"
+    camera_host: str
+    camera_port: int
+    camera_user: str
+    camera_password: str
+    camera_stream_path: str
 
     # ===== 摄像头语音播报配置（ISAPI） =====
-    camera_audio_port: int = 80
-    audio_id_start: int = 15  # car_can_go - 车辆可以通行（任务启动）
-    audio_id_end: int = 14  # car_already_arrive - 车辆已到达（药单完成）
-    audio_check_interval: int = 30  # 语音播报端口检测间隔（秒）
-    audio_connect_timeout: int = 5  # 语音播报连接超时（秒）
+    camera_audio_port: int
+    audio_id_start: int  # car_can_go - 车辆可以通行（任务启动）
+    audio_id_end: int  # car_already_arrive - 车辆已到达（药单完成）
+    audio_check_interval: int  # 语音播报端口检测间隔（秒）
+    audio_connect_timeout: int  # 语音播报连接超时（秒）
 
     # ===== ROS WebSocket 配置 =====
     # 车1 配置
-    car1_ws_host: str = "192.168.51.12"
-    car1_ws_port: int = 9090
-    car1_topic: str = "/car01_pub"  # 车1 监听的ROS Topic（接收消息）
-    car1_pose_topic: str = "car01_pose"  # 车1 实时坐标 Topic（pose publisher 发布 "x,y" 字符串）
-    car1_send_topic: str = "/rxzy_msg"  # 车1 发送到ROS的Topic
-    car1_send_msg_type: str = "his_sub"  # 车1 发送消息的类型
+    car1_ws_host: str
+    car1_ws_port: int
+    car1_topic: str  # 车1 监听的ROS Topic（接收消息）
+    car1_pose_topic: str  # 车1 实时坐标 Topic（pose publisher 发布 "x,y" 字符串）
+    car1_send_topic: str  # 车1 发送到ROS的Topic
+    car1_send_msg_type: str  # 车1 发送消息的类型
 
     # 车2 配置
-    car2_ws_host: str = "192.168.51.12"
-    car2_ws_port: int = 9090
-    car2_topic: str = "/car02_pub"  # 车2 监听的ROS Topic（接收消息）
-    car2_pose_topic: str = "car02_pose"  # 车2 实时坐标 Topic（pose publisher 发布 "x,y" 字符串）
-    car2_send_topic: str = "/car02_rxzy_msg"  # 车2 发送到ROS的Topic
-    car2_send_msg_type: str = "his_sub"  # 车2 发送消息的类型
+    car2_ws_host: str
+    car2_ws_port: int
+    car2_topic: str  # 车2 监听的ROS Topic（接收消息）
+    car2_pose_topic: str  # 车2 实时坐标 Topic（pose publisher 发布 "x,y" 字符串）
+    car2_send_topic: str  # 车2 发送到ROS的Topic
+    car2_send_msg_type: str  # 车2 发送消息的类型
 
     # 通用ROS配置
-    ros_check_interval: int = 30  # 周期检测间隔（秒）
-    ros_connect_timeout: int = 5  # 连接超时（秒）
+    ros_check_interval: int  # 周期检测间隔（秒）
+    ros_connect_timeout: int  # 连接超时（秒）
+    medicine_send_max_attempts: int  # 药品 start/running 重发上限（超限停止发送，防无限重发）
+    medicine_receipt_wait_timeout: int  # 重发上限后静默等待回执的最长时间（秒），超时才放弃本处方
 
     # ===== 电梯控制配置 =====
-    lift_across_delay: int = 60  # 电梯到达后发送跨楼信号的延迟时间（秒）
-    car2_signal_interval: int = 2  # 车2 信号连续发送的重发间隔（秒）
-    pharmacist_success_delay: int = 0  # 节点3扫码复核完成 → 发送车2 pharmacist-success 的延迟（秒）
-    nurse_success_delay: int = 0       # 节点4扫码全部确认 → 发送车2 nurse-success 的延迟（秒）
+    lift_across_delay: int  # 历史兼容字段；电梯到达后发送跨楼信号的延迟时间（秒）
+    car2_signal_interval: int  # 车2 信号连续发送的重发间隔（秒）
+    pharmacist_success_delay: int  # 节点3扫码复核完成 → 发送车2 pharmacist-success 的延迟（秒）
+    nurse_success_delay: int  # 节点4扫码全部确认 → 发送车2 nurse-success 的延迟（秒）
 
     # ===== 电梯硬件 TCP 通信配置（与 elevator_access_control ESP32 通信）=====
-    elevator_tcp_host: str = "0.0.0.0"      # TCP 服务端监听地址（监听所有网卡）
-    elevator_tcp_port: int = 10833           # TCP 服务端端口（与 ESP32 的 TCP_PORT 一致）
-    elevator_udp_port: int = 10832           # UDP 发现响应端口（与 ESP32 的 UDP_PORT 一致）
-    elevator_cmd_timeout: float = 10.0       # 命令 ACK 超时时间（秒）
-    elevator_target_floor: int = 5           # 默认目标楼层（1-5），可通过 .env 的 ELEVATOR_TARGET_FLOOR 覆盖
-    elevator_door_open_delay: float = 3.0    # 开门动作后等待时间（秒）
-    elevator_door_close_delay: float = 3.0   # 关门动作后等待时间（秒）
-    elevator_go_floor_delay: float = 5.0     # 每层楼层移动等待时间（秒）
+    elevator_tcp_host: str  # TCP 服务端监听地址（监听所有网卡）
+    elevator_tcp_port: int  # TCP 服务端端口（与 ESP32 的 TCP_PORT 一致）
+    elevator_udp_port: int  # UDP 发现响应端口（与 ESP32 的 UDP_PORT 一致）
+    elevator_cmd_timeout: float  # 命令 ACK 超时时间（秒）
+    elevator_target_floor: int  # 目标楼层（1-5）
+    elevator_door_open_delay: float  # 开门动作后等待时间（秒）
+    elevator_door_close_delay: float  # 关门动作后等待时间（秒）
+    elevator_go_floor_delay: float  # 每层楼层移动等待时间（秒）
+    elevator_floor_arrive_timeout: float  # 等待 ESP32 floor_arrived 上报的超时兜底（秒）
+    elevator_across_to_go_floor_delay: float  # 发 lift-across 后 → 触发电梯上楼的串行等待（秒，等车进梯）
 
     # ===== 向后兼容（旧字段名 → 映射到车1）=====
     @property
@@ -165,12 +168,12 @@ class Settings(BaseSettings):
         ]
 
     # ===== 机器人摄像头1（ROS webvideo_server） =====
-    robot1_host: str = "192.168.51.12"
-    robot1_port: int = 8080
+    robot1_host: str
+    robot1_port: int
 
     # ===== 机器人摄像头2 =====
-    robot2_host: str = "192.168.51.43"
-    robot2_port: int = 5000
+    robot2_host: str
+    robot2_port: int
 
 
 settings = Settings()

@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Body
 from app.core.config import settings, get_ros_ws_url, get_camera_audio_base_url
 from app.services.ros_listener import get_ros_state
 from app.services.audio_service import get_audio_state, play_audio_sync, check_camera_reachable
+from app.services.workflow_event_service import record_event, get_events_for_prescriptions, delete_events_for_prescription
 
 router = APIRouter()
 
@@ -389,7 +390,8 @@ _triggered_pharmacist_success: set = set()
 @router.post("/workflow/pharmacist-success-trigger")
 async def trigger_pharmacist_success(prescription_code: str = Body(..., embed=True)):
     """
-    HIS 节点3扫码复核完成时调用 → 延迟后触发车2 pharmacist-success 连续发送。
+    HIS 节点3扫码复核完成时调用 → 延迟后触发车2 pharmacist-success 连续发送，
+    同时向车1 发送同样的 pharmacist-success 信号（触发条件/发送内容/内容格式完全一致）。
 
     判断依据：节点3扫码结束（处方所有追溯码已扫到出库状态），由 HIS 扫码端点检测并 HTTP 通知本接口。
     延迟时间通过 .env 的 PHARMACIST_SUCCESS_DELAY 统一配置（秒），设为 0 表示无延迟。
@@ -411,16 +413,93 @@ async def trigger_pharmacist_success(prescription_code: str = Body(..., embed=Tr
         print(f"[pharmacist-success-trigger] 处方 {prescription_code} 延迟 {delay} 秒后发送 pharmacist-success")
         await asyncio.sleep(delay)
 
+    # 阶段一强制闭环：扫码完成后 N1-N5 全部视为完成（缺失的节点由 system 补记）
+    _events = get_events_for_prescriptions([prescription_code]).get(prescription_code, [])
+    _existing = {e["event_key"] for e in _events}
+    _backfill = {
+        "N1_prescription_created": "处方已开具（扫码完成时补记）",
+        "N2_task_confirmed": "任务已确认（扫码完成时补记）",
+        "N3_navigate_pharmacy": "已前往药房（扫码完成时补记）",
+        "N4_picking_medicine": "药品抓取完成（扫码完成时补记）",
+    }
+    for _key, _detail in _backfill.items():
+        if _key not in _existing:
+            record_event(prescription_code, _key, "system", _detail)
+    record_event(prescription_code, "N5_scanned_outbound", "his", "药师扫码出库完成")
+
     await car2_sender.send_pharmacist_success(0, prescription_code)
+    record_event(prescription_code, "N6_task_dispatched", "system", "跨梯运输任务已下发车2")
+
+    # 车1：同一触发点发送同样的 pharmacist-success 信号（内容/格式与车2 完全一致）
+    car1_sender = his_senders.get(1)
+    if car1_sender:
+        await car1_sender.send_pharmacist_success(0, prescription_code)
+        print(f"[pharmacist-success-trigger] 已向车1 发送 pharmacist-success: {prescription_code}")
+    else:
+        print(f"[pharmacist-success-trigger] [警告] 车1发送服务未注册，跳过车1 pharmacist-success")
+
     return {
         "status": "success",
-        "message": f"已触发车2 pharmacist-success: {prescription_code}",
+        "message": f"已触发车2/车1 pharmacist-success: {prescription_code}",
         "delay": delay,
     }
 
 
 # 已触发过 nurse-success 的处方编码集合（进程内幂等去重，同一处方只触发一次）
 _triggered_nurse_success: set = set()
+
+
+@router.post("/workflow/scan-progress")
+async def scan_progress(
+    prescription_code: str = Body(..., embed=True),
+    scanned: int = Body(..., embed=True),
+    total: int = Body(..., embed=True),
+    medicine_name: str = Body("", embed=True),
+):
+    """HIS 每次出库扫码后调用 → 更新 N5 节点显示扫码进度（已扫第几个/共几个）
+
+    仅在 N5 节点已存在（arm_end 已到，扫码出库进行中）且流程未闭环（无 N6）时更新 detail：
+    "扫码出库进行中（1/2），最近扫码：阿莫西林胶囊"。
+    全部扫完时由 pharmacist-success-trigger 写入正式完成事件，覆盖进度显示。
+    """
+    if not prescription_code:
+        raise HTTPException(status_code=400, detail="处方编码不能为空")
+
+    events = get_events_for_prescriptions([prescription_code]).get(prescription_code, [])
+    keys = {e["event_key"] for e in events}
+    if "N6_task_dispatched" in keys:
+        return {"status": "skipped", "message": "流程已闭环，忽略扫码进度"}
+    if "N5_scanned_outbound" not in keys:
+        # arm_end 未到：N5 尚未开始，进度不落库（避免提前把抓药节点顶成完成）
+        return {"status": "skipped", "message": "N5 节点尚未开始（arm_end 未到），忽略扫码进度"}
+
+    detail = f"扫码出库进行中（{scanned}/{total}）"
+    if medicine_name:
+        detail += f"，最近扫码：{medicine_name}"
+    record_event(prescription_code, "N5_scanned_outbound", "his", detail)
+    return {"status": "success", "message": detail}
+
+
+@router.delete("/workflow/prescription-events")
+async def delete_prescription_events(prescription_code: str = Body(..., embed=True)):
+    """HIS 删除处方时联动调用 → 清空该处方在大屏侧的全部节点数据（不做存储）
+
+    清理内容：
+    - workflow_events：15 节点事件流水（该处方全部删除）
+    - prescription_workflow_state：旧 4 节点表该处方记录
+    - 进程内 pharmacist/nurse-success 幂等集合：允许同号新处方重新触发信号
+
+    场景：处方被删除后重新下单（处方码可能复用），旧事件会导致大屏直接显示"全部完成"。
+    """
+    if not prescription_code:
+        raise HTTPException(status_code=400, detail="处方编码不能为空")
+    deleted = delete_events_for_prescription(prescription_code)
+    print(f"[prescription-events] 处方 {prescription_code} 节点数据已清空（删除 {deleted} 条事件）")
+    return {
+        "status": "success",
+        "message": f"处方 {prescription_code} 节点数据已全部清空",
+        "deleted_events": deleted,
+    }
 
 
 @router.post("/workflow/nurse-success-trigger")
@@ -440,6 +519,16 @@ async def trigger_nurse_success(prescription_code: str = Body(..., embed=True)):
     if not car2_sender or not car2_listener:
         raise HTTPException(status_code=503, detail="车2发送服务未启动")
 
+    # 流程阶段校验：护士确认扫码只能发生在交付阶段（N12 开门送出已完成）之后。
+    # 防止药师在出库阶段对同一药品重复扫码（scanned_outbound → scanned_confirm）导致
+    # HIS 判定"全部确认"而提前误触发 nurse-success（跳过电梯运输流程）。
+    # 校验放在幂等去重之前：未到阶段的调用不写入幂等集合，后续合法触发不受影响。
+    events = get_events_for_prescriptions([prescription_code]).get(prescription_code, [])
+    keys = {e["event_key"] for e in events}
+    if "N12_lift_open_sent" not in keys:
+        print(f"[nurse-success-trigger] 处方 {prescription_code} 流程未到交付阶段（N12 缺失），跳过 nurse-success")
+        return {"status": "skipped", "message": f"处方 {prescription_code} 流程未到交付阶段（N12 开门送出未完成），跳过 nurse-success"}
+
     # 幂等去重：同一处方只触发一次，避免重复扫码/并发通知导致重复发送
     if prescription_code in _triggered_nurse_success:
         print(f"[nurse-success-trigger] 处方 {prescription_code} 已触发过，跳过")
@@ -453,6 +542,7 @@ async def trigger_nurse_success(prescription_code: str = Body(..., embed=True)):
         await asyncio.sleep(delay)
 
     car2_listener.trigger_nurse_arrive_event(prescription_code)
+    record_event(prescription_code, "N13_scanned_confirm", "his", "护士扫码确认完成")
     return {
         "status": "success",
         "message": f"已触发车2 nurse-success: {prescription_code}",

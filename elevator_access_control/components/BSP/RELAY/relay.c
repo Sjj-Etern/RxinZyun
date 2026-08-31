@@ -2,14 +2,15 @@
 #include "relay.h"
 // #include <string.h>
 
-// 定义你所有的继电器引脚
+// 定义你所有的继电器引脚（IO改版：2楼/4楼业务 + 开门/关门/电源）
 static const gpio_num_t relay_gpio_list[] = {
-    GPIO_NUM_9,     // 继电器1  → 楼层按钮（3楼）
-    GPIO_NUM_10,    // 继电器2  → 楼层按钮（5楼）
-    GPIO_NUM_3,     // 继电器3  → 开门键
-    GPIO_NUM_13,    // 继电器4  → 关门键
+    GPIO_NUM_9,     // 继电器1  → 楼层按钮（2楼）
+    GPIO_NUM_10,    // 继电器2  → 楼层按钮（4楼）
+    GPIO_NUM_17,    // 继电器3  → 开门键
+    GPIO_NUM_18,    // 继电器4  → 关门键
+    GPIO_NUM_19,    // 继电器5  → 电源键
 };
-static bool relay_state_list[]={0,0,0,0};
+static bool relay_state_list[]={0,0,0,0,0};
 
 // 计算继电器数量
 #define RELAY_COUNT    (sizeof(relay_gpio_list) / sizeof(gpio_num_t))

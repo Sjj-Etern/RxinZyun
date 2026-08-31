@@ -10,11 +10,19 @@ ESP32 作为 TCP 客户端主动连接本服务端。
     {"cmd":"close_door","seq":2}\\n
     {"cmd":"go_floor","floor":5,"seq":3}\\n
     {"cmd":"status","seq":4}\\n
+    {"cmd":"power_on","seq":5}\\n     ← 开机（方案A：继电器5持续吸合供电）
+    {"cmd":"power_off","seq":6}\\n    ← 关机（继电器5释放断电）
 
   ESP32 → 后端 ACK（回传相同 seq）：
     {"type":"ack","cmd":"open_door","status":"ok","seq":1}\\n
     {"type":"ack","cmd":"go_floor","status":"ok","floor":5,"seq":3}\\n
     {"type":"ack","cmd":"status","status":"ok","floor":5,"temp":25,"humi":60,"seq":4}\\n
+    {"type":"ack","cmd":"power_on","status":"ok","power":1,"seq":5}\\n
+    {"type":"ack","cmd":"power_off","status":"ok","power":0,"seq":6}\\n
+
+  ESP32 → 后端 楼层到达上报（go_floor 异步执行完成后的真实时序反馈）：
+    {"type":"floor_arrived","floor":5}\\n
+    （由 wait_floor_arrived() 消费，用于替代后端 sleep 估算到达时间）
 
 UDP 发现协议（与 ESP32 的 udp_broadcast.c 对接）：
   ESP32 → 后端（广播）:
@@ -71,6 +79,9 @@ class ElevatorController:
         # ACK 等待机制
         self._pending_ack: Optional[asyncio.Future] = None
         self._ack_lock = asyncio.Lock()
+
+        # 楼层到达事件（ESP32 上报 floor_arrived 时 set）
+        self._floor_arrived_event = asyncio.Event()
 
         # 命令序列号（递增，用于日志追溯）
         self._cmd_seq: int = 0
@@ -230,6 +241,14 @@ class ElevatorController:
             self.elevator_state["last_status"] = msg
             print(f"[{_ts()}] {tag} STATUS #{seq}: floor={msg.get('floor')}, temp={msg.get('temp')}°C, humi={msg.get('humi')}%")
 
+        elif msg_type == "floor_arrived":
+            # ESP32 楼层移动完成上报（toFloor 执行完毕的真实时序反馈）
+            floor = msg.get("floor")
+            self.elevator_state["last_floor_arrived"] = msg
+            print(f"[{_ts()}] {tag} FLOOR_ARRIVED: floor={floor}")
+            logger.info(f"ESP32 上报楼层到达: {msg}")
+            self._floor_arrived_event.set()
+
         else:
             print(f"[{_ts()}] {tag} [警告] 未知消息类型: {msg}")
 
@@ -290,14 +309,37 @@ class ElevatorController:
         return await self._send_command({"cmd": "close_door"})
 
     async def send_go_floor(self, floor: int) -> dict:
-        """发送去指定楼层命令（1-5）"""
+        """发送去指定楼层命令（1-5）
+
+        发送前清除楼层到达事件，避免上一次残留的 floor_arrived 立即唤醒等待方。
+        """
         if not 1 <= floor <= 5:
             raise ValueError(f"楼层必须在 1-5 之间，收到: {floor}")
+        self._floor_arrived_event.clear()
         return await self._send_command({"cmd": "go_floor", "floor": floor})
+
+    async def wait_floor_arrived(self, timeout: float) -> bool:
+        """等待 ESP32 上报楼层到达（floor_arrived）。
+
+        返回 True = 收到到达上报；False = 超时（兜底，调用方应打警告后继续流程）。
+        """
+        try:
+            await asyncio.wait_for(self._floor_arrived_event.wait(), timeout=timeout)
+            return True
+        except asyncio.TimeoutError:
+            return False
 
     async def send_status_query(self) -> dict:
         """查询电梯当前状态"""
         return await self._send_command({"cmd": "status"})
+
+    async def send_power_on(self) -> dict:
+        """发送开机命令（方案A：继电器5持续吸合供电，与 send_power_off 配对使用）"""
+        return await self._send_command({"cmd": "power_on"})
+
+    async def send_power_off(self) -> dict:
+        """发送关机命令（继电器5释放断电，与 send_power_on 配对使用）"""
+        return await self._send_command({"cmd": "power_off"})
 
     # ===== 状态查询 =====
 

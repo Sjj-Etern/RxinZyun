@@ -331,8 +331,10 @@ async def elevator_state():
 async def elevator_command(cmd: str, floor: int = 3):
     """
     发送电梯控制命令（调试用）
-    - cmd: open_door / close_door / go_floor / status
+    - cmd: open_door / close_door / go_floor / status / power_on / power_off
     - floor: 目标楼层（仅 go_floor 时有效，1-5）
+    - power_on: 开机（方案A：继电器5持续吸合供电）
+    - power_off: 关机（继电器5释放断电）
     """
     controller = get_elevator_controller()
 
@@ -348,6 +350,10 @@ async def elevator_command(cmd: str, floor: int = 3):
             ack = await controller.send_go_floor(floor)
         elif cmd == "status":
             ack = await controller.send_status_query()
+        elif cmd == "power_on":
+            ack = await controller.send_power_on()
+        elif cmd == "power_off":
+            ack = await controller.send_power_off()
         else:
             return {"status": "error", "message": f"未知命令: {cmd}"}
 

@@ -9,10 +9,12 @@ notify_* 等），默认操作车1。
 """
 import asyncio
 import json
+import time
 import pymysql
 import websockets
 from typing import Optional
 from app.core.config import settings
+from app.services.workflow_event_service import record_event, get_events_for_prescriptions
 
 # HIS 数据库连接配置（共享）
 HIS_DB_CONFIG = {
@@ -36,7 +38,8 @@ _senders: dict = {}  # {car_id: HisSender}
 
 def get_latest_pending_prescription():
     """
-    从 HIS 数据库获取最新待处理的处方编码
+    从 HIS 数据库获取最新待处理的处方编码（附下单时间，用于删除重下自愈判定）
+    返回 (prescription_code, created_at) 或 None
     """
     try:
         conn = pymysql.connect(**HIS_DB_CONFIG, connect_timeout=5)
@@ -44,7 +47,7 @@ def get_latest_pending_prescription():
             cursor.execute("""
                 SELECT prescription_code, id, created_at
                 FROM prescriptions
-                WHERE status = 'pending'
+                WHERE status = 'approved'
                 ORDER BY created_at DESC
                 LIMIT 1
             """)
@@ -53,15 +56,43 @@ def get_latest_pending_prescription():
             if result:
                 prescription_code = result["prescription_code"]
                 print(f"[HIS Sender] 获取到最新处方: {prescription_code}")
-                return prescription_code
+                return prescription_code, result["created_at"]
             else:
-                return None
+                return None, None
     except Exception as e:
         print(f"[HIS Sender] 查询 HIS 数据库失败: {e}")
-        return None
+        return None, None
     finally:
         if 'conn' in locals():
             conn.close()
+
+
+def purge_stale_events_if_reordered(prescription_code: str, created_at) -> int:
+    """删除重下自愈：处方码复用时自动清理上一轮的旧节点事件。
+
+    判定：该处方在 workflow_events 已有事件，但 HIS 中该处方的 created_at（本轮下单时间）
+    晚于全部旧事件的最大 created_at → 说明旧事件属于"删除前"的上一轮，本轮是同号新单。
+    自动清空旧事件（含 prescription_workflow_state 旧表记录与幂等集合），
+    避免大屏显示"全部完成"且重入防护误判"阶段一已闭环"而不发 start。
+    返回删除的事件条数（0 表示无需清理）。
+    """
+    try:
+        from app.services.workflow_event_service import (
+            get_events_for_prescriptions, delete_events_for_prescription
+        )
+        events = get_events_for_prescriptions([prescription_code]).get(prescription_code, [])
+        if not events or created_at is None:
+            return 0
+        max_event_time = max(e["created_at"] for e in events)
+        if created_at <= max_event_time:
+            # 旧事件不早于本轮下单时间 → 同一轮的正常事件（后端重启恢复场景），保留
+            return 0
+        print(f"[HIS Sender] 检测到处方 {prescription_code} 为删除后重下（下单时间晚于旧事件），"
+              f"自动清理旧节点事件 {len(events)} 条")
+        return delete_events_for_prescription(prescription_code)
+    except Exception as e:
+        print(f"[HIS Sender] [警告] 删除重下自愈检查失败（不影响发送）: {e}")
+        return 0
 
 
 def get_prescription_medicine_locations(prescription_code: str) -> list:
@@ -188,6 +219,12 @@ class HisSender:
         self.all_medicines_completed = False
         self.task_completed = False
 
+        # 发送失败已放弃的处方集合（内存级；后端重启后清空，重入防护改由 DB 事件兜底）
+        self._failed_prescriptions = set()
+        # 当前处方的 HIS 下单时间（datetime，用于"删除后同单号重下"检测）
+        self._prescription_taken_at = None
+        self._prescription_taken_at_str = "-"
+
         # 预期上下文
         self.expected_medicine_id = None
         self.expected_prescription_code = None
@@ -267,15 +304,24 @@ class HisSender:
     # 直到被 stop_current_signal()（收到对应回执）或下一个信号启动（信号改变）停止。
     # nurse-success 是末位信号，无对应回执，发送 3 次后自动停止。
 
-    async def _publish_signal_once(self, message: str) -> bool:
-        """发送一次车2 信号（纯字符串 data 载荷，信息拼在 data 内）"""
+    async def _publish_signal_once(self, message: str, msg_fields: Optional[dict] = None) -> bool:
+        """发送一次信号。
+        - msg_fields=None：纯字符串 data 载荷（信息拼在 data 内，车2 4 信号用）
+        - msg_fields=dict：结构化载荷（data + prescription_code，车1 pharmacist-success 用，格式参考 start）
+        """
         tag = self._log_tag()
         try:
             await self._ensure_ws_connection()
+            if msg_fields is not None:
+                # 自定义格式（参考 start 消息）：msg 内含 data + prescription_code
+                msg_payload = {"data": message}
+                msg_payload.update(msg_fields)
+            else:
+                msg_payload = {"data": message}
             message_dict = {
                 "op": "publish",
                 "topic": self.send_topic,
-                "msg": {"data": message},
+                "msg": msg_payload,
             }
             await self.ws_connection.send(json.dumps(message_dict))
             return True
@@ -290,11 +336,13 @@ class HisSender:
             return False
 
     async def _start_continuous_send(self, signal_name: str, message: str,
-                                    max_sends: Optional[int] = None) -> None:
+                                    max_sends: Optional[int] = None,
+                                    msg_fields: Optional[dict] = None) -> None:
         """
         启动一个信号的连续发送。会先停掉当前正在发送的信号（信号改变即停）。
         - max_sends=None：持续发送，直到 stop_current_signal() 或下一个信号切换
         - max_sends=N：发送 N 次后自动停止（用于末位信号 nurse-success）
+        - msg_fields=dict：使用结构化载荷（车1 pharmacist-success 自定义格式）
         """
         tag = self._log_tag()
         await self._stop_continuous_send()
@@ -303,7 +351,7 @@ class HisSender:
         self._continuous_stop_event = stop_event
         self._continuous_signal_name = signal_name
         self._continuous_send_task = asyncio.create_task(
-            self._continuous_send_loop(signal_name, message, stop_event, max_sends)
+            self._continuous_send_loop(signal_name, message, stop_event, max_sends, msg_fields)
         )
 
     async def _stop_continuous_send(self) -> None:
@@ -324,7 +372,8 @@ class HisSender:
 
     async def _continuous_send_loop(self, signal_name: str, message: str,
                                    stop_event: asyncio.Event,
-                                   max_sends: Optional[int]) -> None:
+                                   max_sends: Optional[int],
+                                   msg_fields: Optional[dict] = None) -> None:
         tag = self._log_tag()
         interval = settings.car2_signal_interval
         limit_desc = f"，上限 {max_sends} 次" if max_sends is not None else "，持续至切换/停止"
@@ -335,7 +384,7 @@ class HisSender:
                 if max_sends is not None and count >= max_sends:
                     break
                 count += 1
-                ok = await self._publish_signal_once(message)
+                ok = await self._publish_signal_once(message, msg_fields)
                 print(f"{tag} [连续发送] {signal_name} 第 {count} 次 {'✓' if ok else '✗'}")
                 if max_sends is not None and count >= max_sends:
                     break
@@ -520,8 +569,45 @@ class HisSender:
     # ===== 药师审核通过信号 =====
 
     async def send_pharmacist_success(self, medicine_id: int, prescription_code: str):
-        """启动 pharmacist-success 连续发送（车1 running-step4 时调用；收到 lift-arrive 后由调用方停）"""
+        """
+        发送 pharmacist-success。
+        - 车2：纯字符串 data（信息拼在 data 内），连续发送（2s 间隔），收到 lift-arrive 后由调用方停
+        - 车1：格式与 start 消息完全一致（9 字段一个不少），
+               data="pharmacist-success"，药品字段取当前处理中的药品上下文，无上下文时填 0；
+               只发一遍（无回执停止机制，连发会无限刷屏），失败时重试，最多 3 次
+        """
         tag = self._log_tag()
+        if self.car_id == 1:
+            # 车1：单发+失败重试（最多 3 次，间隔 2s），成功即停
+            message = "pharmacist-success"
+            md = None
+            if 0 <= self.current_medicine_index < len(self.medicine_list):
+                md = self.medicine_list[self.current_medicine_index]
+            msg_fields = {
+                "prescription_code": prescription_code,
+                "medicine_id": (md or {}).get("medicine_id", 0),
+                "x": (md or {}).get("x", 0.0),
+                "y": (md or {}).get("y", 0.0),
+                "z": (md or {}).get("z", 0.0),
+                "yaw": (md or {}).get("yaw", 0.0),
+                "medicine_total": self.medicine_total,
+                "medicine_index": self.current_medicine_index + 1 if md else 0,
+            }
+            print("=" * 60)
+            print(f"{tag} → 车1 pharmacist-success 单发（失败重试，最多 3 次）:")
+            print(f"{tag}   Topic: {self.send_topic}")
+            print(f"{tag}   prescription_code: {prescription_code}")
+            print("=" * 60)
+            for attempt in range(1, 4):
+                ok = await self._publish_signal_once(message, msg_fields)
+                print(f"{tag} 车1 pharmacist-success 第 {attempt} 次 {'✓' if ok else '✗'}")
+                if ok:
+                    return
+                if attempt < 3:
+                    await asyncio.sleep(settings.car2_signal_interval)
+            print(f"{tag} [ERROR] 车1 pharmacist-success 发送 3 次均失败，放弃")
+            return
+        # 车2：纯字符串 data（信息拼在 data 内），连续发送，收到 lift-arrive 后由调用方停
         message = f"{prescription_code}_pharmacist-success"
         print("=" * 60)
         print(f"{tag} → 启动 pharmacist-success 连续发送:")
@@ -531,6 +617,28 @@ class HisSender:
         print(f"{tag}   prescription_code: {prescription_code}")
         print("=" * 60)
         await self._start_continuous_send("pharmacist-success", message, max_sends=None)
+
+    async def _wait_receipt_silently(self, event: asyncio.Event, timeout: int, desc: str) -> bool:
+        """重发上限后停止发送，静默等待回执（每30s打印一次等待心跳）。
+
+        解耦"重发上限"与"回执等待时长"：真实车1 从 running 到 step5 耗时可能超过
+        重发窗口（15次×2s=30s），重发上限只防无限发送，不应截断等待。
+        重发上限到达后停止发送、继续等待；回执到达返回 True，超时返回 False。
+        """
+        tag = self._log_tag()
+        start = time.time()
+        deadline = start + timeout
+        last_beat = start
+        while not event.is_set() and self.sender_running:
+            if time.time() >= deadline:
+                print(f"{tag} [ERROR] 静默等待 {desc} 超时（{timeout}s），放弃本处方")
+                return False
+            await asyncio.sleep(1)
+            now = time.time()
+            if now - last_beat >= 30:
+                print(f"{tag} 静默等待回执: {desc}（已等待 {int(now - start)}s/{timeout}s）")
+                last_beat = now
+        return event.is_set() and self.sender_running
 
     # ===== 核心：顺序处理单个药品 =====
 
@@ -547,10 +655,17 @@ class HisSender:
         self.started_event.clear()
         self.step5_return_event.clear()
 
-        # 阶段1：发送 start，等待 running-started
-        print(f"{tag} 阶段1：发送 start，等待 running-started")
+        # 阶段1：发送 start，等待 running-started（重发上限后停止发送、静默等待回执）
+        max_attempts = settings.medicine_send_max_attempts
+        receipt_wait_timeout = settings.medicine_receipt_wait_timeout
+        print(f"{tag} 阶段1：发送 start，等待 running-started（重发上限 {max_attempts} 次，"
+              f"超限后静默等待最长 {receipt_wait_timeout}s）")
         send_count = 0
         while not self.started_event.is_set() and self.sender_running:
+            if send_count >= max_attempts:
+                print(f"{tag} [WARN] 阶段1 重发超过上限 {max_attempts} 次，停止发送，转入静默等待"
+                      f"（处方={prescription_code}, 药品ID={medicine_id}）")
+                break
             send_count += 1
             print(f"{tag} 发送 start（第{send_count}次）")
             await self.send_medicine_to_ros(
@@ -564,15 +679,27 @@ class HisSender:
         if not self.sender_running:
             return False
 
+        if not self.started_event.is_set():
+            # 重发上限已到但回执未达：停止发送，静默等待回执（真实车1 到达时间可能远超重发窗口）
+            if not await self._wait_receipt_silently(
+                    self.started_event, receipt_wait_timeout,
+                    f"running-started（处方={prescription_code}, 药品ID={medicine_id}）"):
+                return False
+
         print(f"{tag} [OK] 收到 running-started（共发送{send_count}次start）")
         self.medicine_started[medicine_id] = True
 
-        # 阶段2：发送 running，等待 running-step5-waiting-end
-        print(f"{tag} 阶段2：发送 running，等待 running-step5-waiting-end")
+        # 阶段2：发送 running，等待 running-step5-waiting-end（重发上限后停止发送、静默等待回执）
+        print(f"{tag} 阶段2：发送 running，等待 running-step5-waiting-end（重发上限 {max_attempts} 次，"
+              f"超限后静默等待最长 {receipt_wait_timeout}s）")
         if self.step5_return_event.is_set():
             print(f"{tag} [OK] step5-return 在阶段1已到达，跳过 running 发送")
         send_count = 0
         while not self.step5_return_event.is_set() and self.sender_running:
+            if send_count >= max_attempts:
+                print(f"{tag} [WARN] 阶段2 重发超过上限 {max_attempts} 次，停止发送，转入静默等待"
+                      f"（处方={prescription_code}, 药品ID={medicine_id}）")
+                break
             send_count += 1
             print(f"{tag} 发送 running（第{send_count}次）")
             await self.send_medicine_to_ros(
@@ -586,9 +713,17 @@ class HisSender:
         if not self.sender_running:
             return False
 
+        if not self.step5_return_event.is_set():
+            # 重发上限已到但 step5 回执未达：停止发送，静默等待回执
+            # （真实车1 从 running 到 step5 含导航+抓药+放药，耗时可能远超 30s 重发窗口）
+            if not await self._wait_receipt_silently(
+                    self.step5_return_event, receipt_wait_timeout,
+                    f"running-step5-waiting-end（处方={prescription_code}, 药品ID={medicine_id}）"):
+                return False
+
         print(f"{tag} [OK] 收到 running-step5-waiting-end（共发送{send_count}次running）")
 
-        # 阶段3：发送 end
+        # 阶段3：发送 end（收到 step5 回执后直接发送，与旧版一致，不依赖药师扫码）
         print(f"{tag} 阶段3：发送 end（两次，间隔2秒）")
         success = await self.send_medicine_end_to_ros(
             prescription_code, medicine_data, medicine_index, medicine_total
@@ -629,21 +764,60 @@ class HisSender:
                     await asyncio.sleep(settings.ros_check_interval)
                     continue
 
-                new_code = get_latest_pending_prescription()
+                new_code, new_created_at = get_latest_pending_prescription()
 
                 print(f"{tag} 主循环状态检查:")
                 print(f"{tag}   当前处方编码: {self.current_prescription_code}")
                 print(f"{tag}   查询处方编码: {new_code}")
                 print(f"{tag}   是否相同: {new_code == self.current_prescription_code}")
 
+                if new_code == self.current_prescription_code and new_code:
+                    # 同单号：检测是否为删除后重下的新单（created_at 变化）
+                    # 内存态 _prescription_taken_at 可能因重启丢失，降级查 DB
+                    old_created_at = self._prescription_taken_at
+                    if old_created_at is None and new_created_at:
+                        # 重启后内存丢失，查 workflow_events 最旧事件时间作为"旧下单时间"近似
+                        try:
+                            from app.services.workflow_event_service import get_events_for_prescriptions
+                            _evts = get_events_for_prescriptions([new_code]).get(new_code, [])
+                            if _evts:
+                                old_created_at = min(e.get("created_at") for e in _evts if e.get("created_at"))
+                        except Exception:
+                            pass
+                    if (new_created_at and old_created_at
+                            and new_created_at != old_created_at):
+                        print(f"{tag} 检测到同单号重新下单: {new_code}"
+                              f"（原下单 {self._prescription_taken_at_str}, 新下单 {new_created_at}），重置流程")
+                        purge_stale_events_if_reordered(new_code, new_created_at)
+                        self._failed_prescriptions.discard(new_code)
+                        self.reset_medicine_state(new_code)
+                        self.task_completed = False
+                        self._prescription_taken_at = new_created_at
+                        self._prescription_taken_at_str = str(new_created_at)
+                        if self.car_id == 1:
+                            record_event(new_code, "N1_prescription_created", "his", "处方已开具，任务开始")
+                        if not self.medicine_list:
+                            print(f"{tag} 药品列表为空，等待新处方...")
+                            await asyncio.sleep(POLL_INTERVAL)
+                            continue
+
                 if new_code != self.current_prescription_code:
                     if new_code:
                         print(f"\n{tag} {'='*40}")
                         print(f"{tag} 处方编码更新: {self.current_prescription_code} -> {new_code}")
+                        # 删除重下自愈：同单号重新下单时清理上一轮旧节点事件
+                        # （HIS 删除联动失败时的兜底，防止重入防护误判"阶段一已闭环"不发 start）
+                        purge_stale_events_if_reordered(new_code, new_created_at)
                         self.current_prescription_code = new_code
                         self.expected_prescription_code = new_code
+                        self._prescription_taken_at = new_created_at
+                        self._prescription_taken_at_str = str(new_created_at)
+                        # 新处方（含失败后换新单）：从失败集合中移除，允许重新处理
+                        self._failed_prescriptions.discard(new_code)
                         self.reset_medicine_state(new_code)
                         print(f"{tag} {'='*40}")
+                        if self.car_id == 1:
+                            record_event(new_code, "N1_prescription_created", "his", "处方已开具，任务开始")
 
                         if not self.medicine_list:
                             print(f"{tag} 药品列表为空，等待新处方...")
@@ -653,6 +827,26 @@ class HisSender:
                         print(f"{tag} 无待处理处方，等待新处方...")
                         await asyncio.sleep(POLL_INTERVAL)
                         continue
+
+                # ===== 重入防护（DB 事件兜底）=====
+                # 阶段一已闭环的处方（arm_end 到达，N5 事件已存在）不再重复发送。
+                # 后端重启后内存进度丢失，以 workflow_events 为准，避免从药1 重新发送。
+                if self.current_prescription_code:
+                    try:
+                        _events = get_events_for_prescriptions([self.current_prescription_code]).get(
+                            self.current_prescription_code, [])
+                        if any(e["event_key"] == "N5_scanned_outbound" for e in _events):
+                            print(f"{tag} 处方 {self.current_prescription_code} 阶段一已闭环（N5 事件存在），跳过药品发送")
+                            await asyncio.sleep(POLL_INTERVAL)
+                            continue
+                    except Exception as _e:
+                        print(f"{tag} [警告] 重入防护事件查询失败: {_e}")
+
+                # 发送失败已放弃的处方：跳过，直到新处方到来（防止持续重试刷屏）
+                if self.current_prescription_code and self.current_prescription_code in self._failed_prescriptions:
+                    print(f"{tag} 处方 {self.current_prescription_code} 此前发送失败已放弃，等待新处方...")
+                    await asyncio.sleep(POLL_INTERVAL)
+                    continue
 
                 if self.task_completed:
                     print(f"{tag} 任务已完成，停止发送")
@@ -666,6 +860,10 @@ class HisSender:
 
                         self.current_medicine_index = idx
                         current_medicine = self.medicine_list[idx]
+
+                        # 车1 首个药品开始发送 → 记录"前往药房"节点事件
+                        if self.car_id == 1 and idx == 0:
+                            record_event(self.current_prescription_code, "N3_navigate_pharmacy", "car1", "车1前往药房取药")
 
                         medicine_id_check = current_medicine.get("medicine_id", 0)
                         if medicine_id_check == 0 or medicine_id_check is None:
@@ -684,7 +882,8 @@ class HisSender:
                         if success:
                             self.last_sent_code = self.current_prescription_code
                         else:
-                            print(f"{tag} 药品发送失败，退出当前处方处理")
+                            print(f"{tag} 药品发送失败，放弃本处方（加入失败集合，等待新处方）")
+                            self._failed_prescriptions.add(self.current_prescription_code)
                             break
 
                     if self.current_medicine_index >= self.medicine_total - 1:

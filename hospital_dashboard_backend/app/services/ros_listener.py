@@ -24,6 +24,23 @@ except ImportError:
 
 from app.core.config import settings, get_ros_ws_url
 from app.services.elevator_control import get_elevator_controller
+from app.services.workflow_event_service import record_event, get_events_for_prescriptions
+
+
+def _stage1_finalized(prescription_code: str) -> bool:
+    """阶段一（N1-N5）是否已因药师扫码完成而强制闭环。
+
+    判定依据：该处方已存在 N5_scanned_outbound 事件（由 workflow.py
+    pharmacist-success-trigger 写入）。闭环后 N4 相关的晚到事件
+    （arm-* / all_completed）不再写入，避免 N4 节点被"复活"为 active。
+    """
+    if not prescription_code:
+        return False
+    try:
+        events = get_events_for_prescriptions([prescription_code]).get(prescription_code, [])
+        return any(e["event_key"] == "N5_scanned_outbound" for e in events)
+    except Exception:
+        return False
 
 logger = logging.getLogger(__name__)
 
@@ -32,17 +49,17 @@ _lift_across_delay_override: Optional[int] = None
 
 
 def set_lift_across_delay_override(seconds: int):
-    """动态设置 lift-across 延迟（调试用）"""
+    """动态设置 lift-across → 电梯上楼的串行等待延迟（调试用）"""
     global _lift_across_delay_override
     _lift_across_delay_override = seconds
 
 
 def get_lift_across_delay_override() -> int:
-    """获取当前 lift-across 延迟"""
+    """获取当前 lift-across → 电梯上楼串行等待延迟"""
     global _lift_across_delay_override
     if _lift_across_delay_override is not None:
         return _lift_across_delay_override
-    return settings.lift_across_delay
+    return settings.elevator_across_to_go_floor_delay
 
 
 class ROSListenerState(Enum):
@@ -143,20 +160,30 @@ def parse_ros_message(data: str) -> Dict[str, Any]:
 
 def update_prescription_workflow_db(prescription_code: str, status: str, medicine_id: Optional[int] = None) -> bool:
     try:
-        from sqlalchemy import create_engine, text
+        from sqlalchemy import text
+        from app.db.session import engine as LOCAL_ENGINE
 
-        engine = create_engine(settings.database_url)
-
-        with engine.connect() as conn:
+        with LOCAL_ENGINE.connect() as conn:
             node_updates = get_node_updates_from_status(status, medicine_id)
 
+            # MySQL 方言：prescription_code 有 unique 索引，用 ON DUPLICATE KEY UPDATE 实现 upsert
             upsert_sql = text("""
-                INSERT OR REPLACE INTO prescription_workflow_state
+                INSERT INTO prescription_workflow_state
                 (prescription_code, current_node, node2_status, node2_desc,
                  node3_status, node3_desc, node4_status, node4_desc, ros_status, updated_at)
                 VALUES (:code, :current_node, :node2_status, :node2_desc,
                         :node3_status, :node3_desc, :node4_status, :node4_desc,
-                        :ros_status, datetime('now', 'localtime'))
+                        :ros_status, NOW())
+                ON DUPLICATE KEY UPDATE
+                    current_node = VALUES(current_node),
+                    node2_status = VALUES(node2_status),
+                    node2_desc = VALUES(node2_desc),
+                    node3_status = VALUES(node3_status),
+                    node3_desc = VALUES(node3_desc),
+                    node4_status = VALUES(node4_status),
+                    node4_desc = VALUES(node4_desc),
+                    ros_status = VALUES(ros_status),
+                    updated_at = NOW()
             """)
             conn.execute(upsert_sql, {
                 "code": prescription_code,
@@ -270,6 +297,18 @@ def get_node_updates_from_status(status: str, medicine_id: Optional[int] = None)
         defaults["current_node"] = 2
         defaults["node2_status"] = "completed"
         defaults["node2_desc"] = f"任务确认完成{medicine_info}"
+    elif status == "arm-picking":
+        defaults["current_node"] = 2
+        defaults["node2_status"] = "completed"
+        defaults["node2_desc"] = f"机械臂正在抓取{medicine_info}"
+    elif status == "arm-placing":
+        defaults["current_node"] = 2
+        defaults["node2_status"] = "completed"
+        defaults["node2_desc"] = f"机械臂正在放药{medicine_info}"
+    elif status == "arm-error":
+        defaults["current_node"] = 2
+        defaults["node2_status"] = "completed"
+        defaults["node2_desc"] = f"机械臂执行异常{medicine_info}"
     elif status in ("running-step3-navigate-doctor", "running_step3_navigate_docter"):
         defaults["current_node"] = 3
         defaults["node2_status"] = "completed"
@@ -603,6 +642,7 @@ class RosListener:
                         print(f"{tag} 播放 audio_id={settings.audio_id_end} (car_already_arrive) - 第2次")
                         await play_audio_async(settings.audio_id_end)
                         self.audio_state["nurse_arrive_audio_triggered"] = True
+                        record_event(prescription_code, "N14_voice_broadcast", "car2", "已播报\"药物已送达，请您确认\"")
                         print(f"{tag} 语音播报成功：nurse_arrive 到达播报")
                     except Exception as audio_err:
                         logger.error(f"语音播报失败: {audio_err}")
@@ -657,6 +697,8 @@ class RosListener:
             if medicine_id is not None and prescription_code and sender:
                 logger.info(f"药品任务启动: ID={medicine_id}, 处方={prescription_code}")
                 print(f"{tag} 药品任务启动: ID={medicine_id}, 处方={prescription_code}")
+                if self.car_id == 1:
+                    record_event(prescription_code, "N2_task_confirmed", "car1", "车1任务已确认")
                 try:
                     sender.notify_medicine_started(medicine_id, prescription_code)
                 except Exception as sender_err:
@@ -665,10 +707,72 @@ class RosListener:
         elif status == "all_completed":
             if sender:
                 logger.info(f"所有药品完成抓取: {prescription_code}")
+                if self.car_id == 1:
+                    if _stage1_finalized(prescription_code):
+                        logger.info("阶段一已闭环（扫码出库完成），跳过 N4 事件写入")
+                    else:
+                        record_event(prescription_code, "N4_picking_medicine", "car1", "所有药品已抓取")
                 try:
                     sender.notify_all_medicines_completed(prescription_code)
                 except Exception as sender_err:
                     logger.error(f"通知 HIS Sender 失败: {sender_err}")
+
+        # 机械臂模块状态（arm-*）：绑定前端 N4 抓取药品节点（过程细分，不驱动业务流程）
+        # 文档参考: car01_topic_interface.md 第4节
+        # 注意：阶段一闭环（N5 已存在）后不再写入 N4 事件，避免节点被晚到事件"复活"
+        elif status == "arm-picking":
+            if prescription_code and self.car_id == 1:
+                if _stage1_finalized(prescription_code):
+                    logger.info(f"阶段一已闭环，忽略机械臂抓取事件: ID={medicine_id}")
+                else:
+                    logger.info(f"机械臂正在抓取: ID={medicine_id}, 处方={prescription_code}")
+                    record_event(prescription_code, "N4_picking_medicine", "car1_arm",
+                                 f"机械臂正在抓取（药品ID={medicine_id}）")
+
+        elif status == "arm-placing":
+            if prescription_code and self.car_id == 1:
+                if _stage1_finalized(prescription_code):
+                    logger.info(f"阶段一已闭环，忽略机械臂放药事件: ID={medicine_id}")
+                else:
+                    logger.info(f"机械臂正在放药: ID={medicine_id}, 处方={prescription_code}")
+                    record_event(prescription_code, "N4_picking_medicine", "car1_arm",
+                                 f"机械臂正在放药（药品ID={medicine_id}）")
+
+        elif status == "arm-error":
+            if prescription_code and self.car_id == 1:
+                if _stage1_finalized(prescription_code):
+                    logger.info(f"阶段一已闭环，忽略机械臂异常事件: ID={medicine_id}")
+                else:
+                    logger.warning(f"机械臂执行异常: ID={medicine_id}, 处方={prescription_code}")
+                    record_event(prescription_code, "N4_picking_medicine", "car1_arm",
+                                 f"机械臂执行异常（药品ID={medicine_id}），详情见车1日志")
+
+        # 机械臂流程结束（药单级）：N4 抓药节点结束，切换至 N5 扫码出库（进行中）
+        # 消息格式: {prescription_code}_arm_end（无 medicine_id 前缀，药单级信号）
+        elif status == "arm_end":
+            if prescription_code and self.car_id == 1:
+                logger.info(f"机械臂流程结束（药单级）: 处方={prescription_code}")
+                print(f"{tag} 机械臂流程结束（药单级）: {prescription_code}")
+                if _stage1_finalized(prescription_code):
+                    logger.info("阶段一已闭环（扫码出库完成），忽略 arm_end 事件")
+                else:
+                    events = get_events_for_prescriptions([prescription_code]).get(prescription_code, [])
+                    existing = {e["event_key"] for e in events}
+                    # N1-N3 缺失补记（arm_end 到达即视为前序流程已过）
+                    backfill = {
+                        "N1_prescription_created": "处方已开具（arm_end 时补记）",
+                        "N2_task_confirmed": "任务已确认（arm_end 时补记）",
+                        "N3_navigate_pharmacy": "已前往药房（arm_end 时补记）",
+                    }
+                    for key, detail in backfill.items():
+                        if key not in existing:
+                            record_event(prescription_code, key, "system", detail)
+                    # N4 置为已完成
+                    record_event(prescription_code, "N4_picking_medicine", "car1_arm",
+                                 "机械臂流程已结束（arm_end）")
+                    # N5 置为进行中（等待药师扫码）
+                    record_event(prescription_code, "N5_scanned_outbound", "car1_arm",
+                                 "扫码出库进行中（等待药师扫码）")
 
         # 注意：pharmacist-success 不再监听 running-step4-deliver-medicine 节点触发，
         # 改由 HIS 节点3扫码复核完成（所有追溯码出库）后通过
@@ -680,6 +784,7 @@ class RosListener:
                 print("=" * 60)
                 print(f"{tag} 电梯到达目标楼层: {prescription_code}")
                 print("=" * 60)
+                record_event(prescription_code, "N7_arrived_elevator", "car2", "车2已抵达电梯")
 
                 from app.services.his_sender import _senders as his_senders
                 car2_sender = his_senders.get(2)
@@ -702,6 +807,7 @@ class RosListener:
                     print(f"{tag} [电梯] 发送开门命令...")
                     try:
                         await elevator.send_open_door()
+                        record_event(prescription_code, "N8_elevator_door_open", "elevator", "电梯门已打开")
                         print(f"{tag} [电梯] ✓ 开门完成，等待 {settings.elevator_door_open_delay} 秒...")
                         await asyncio.sleep(settings.elevator_door_open_delay)
                     except Exception as e:
@@ -711,22 +817,20 @@ class RosListener:
 
                 # ===== Step 2: 通知车2 跨楼（lift-across）=====
                 await car2_sender.send_lift_across(prescription_code)
+                record_event(prescription_code, "N9_crossing_elevator", "car2", "车2跨梯运输中")
                 print(f"{tag} → 车2: lift-across")
 
-                # ===== Step 3: 等待（车2进入电梯）=====
-                delay = get_lift_across_delay_override()
-                print(f"{tag} 等待 {delay} 秒...")
-                await asyncio.sleep(delay)
+                # ===== Step 3: 串行等待（车2进入电梯），时长 .env 可配置 =====
+                across_delay = settings.elevator_across_to_go_floor_delay
+                print(f"{tag} 等待 {across_delay} 秒（车2进梯，lift-across → 电梯上楼 串行间隔）...")
+                await asyncio.sleep(across_delay)
 
-                # ===== Step 4: 通知车2 电梯开门（lift-open）=====
-                await car2_sender.send_lift_open(prescription_code)
-                print(f"{tag} → 车2: lift-open")
-
-                # ===== Step 5: 关门（电梯硬件）=====
+                # ===== Step 4: 关门（电梯硬件）=====
                 if elevator.is_connected():
                     print(f"{tag} [电梯] 发送关门命令...")
                     try:
                         await elevator.send_close_door()
+                        record_event(prescription_code, "N10_elevator_door_close", "elevator", "电梯门已关闭")
                         print(f"{tag} [电梯] ✓ 关门完成，等待 {settings.elevator_door_close_delay} 秒...")
                         await asyncio.sleep(settings.elevator_door_close_delay)
                     except Exception as e:
@@ -734,7 +838,7 @@ class RosListener:
                 else:
                     print(f"{tag} [电梯] [警告] ESP32 未连接，跳过关门")
 
-                # ===== Step 6: 去目标楼层（电梯硬件）=====
+                # ===== Step 5: 去目标楼层（电梯硬件），到达后立即发送 lift-open =====
                 target_floor = settings.elevator_target_floor
                 # 先查询当前楼层，避免重复移动
                 if elevator.is_connected():
@@ -746,15 +850,39 @@ class RosListener:
                             print(f"{tag} [电梯] 发送去{target_floor}楼命令...")
                             await elevator.send_go_floor(target_floor)
                             print(f"{tag} [电梯] ✓ 去{target_floor}楼命令已发送")
-                            print(f"{tag} [电梯] 等待电梯移动完成 ({settings.elevator_go_floor_delay} 秒/层)...")
-                            floor_diff = abs(target_floor - current_floor)
-                            await asyncio.sleep(settings.elevator_go_floor_delay * max(floor_diff, 1))
+                            # 监听 ESP32 上报楼层到达（真实时序反馈，非 sleep 估算）
+                            print(f"{tag} [电梯] 等待楼层到达上报 (兜底超时 {settings.elevator_floor_arrive_timeout} 秒)...")
+                            arrived = await elevator.wait_floor_arrived(settings.elevator_floor_arrive_timeout)
+                            if arrived:
+                                record_event(prescription_code, "N11_floor_arrived", "elevator", f"电梯已到达{target_floor}楼")
+                                print(f"{tag} [电梯] ✓ 已收到楼层到达上报")
+                            else:
+                                print(f"{tag} [电梯] [警告] 等待楼层到达超时（{settings.elevator_floor_arrive_timeout} 秒），兜底继续流程")
                         else:
                             print(f"{tag} [电梯] 已在{target_floor}楼，无需移动")
                     except Exception as e:
                         print(f"{tag} [电梯] [警告] 楼层移动失败: {e}")
                 else:
                     print(f"{tag} [电梯] [警告] ESP32 未连接，跳过楼层移动")
+
+                # ===== Step 5.5: 到达目标楼层后触发电梯开门（硬件）=====
+                if elevator.is_connected():
+                    print(f"{tag} [电梯] 到达{target_floor}楼，发送开门命令...")
+                    try:
+                        await elevator.send_open_door()
+                        record_event(prescription_code, "N12_lift_open_sent", "elevator",
+                                     f"电梯已到{target_floor}楼并开门")
+                        print(f"{tag} [电梯] ✓ 开门完成，等待 {settings.elevator_door_open_delay} 秒...")
+                        await asyncio.sleep(settings.elevator_door_open_delay)
+                    except Exception as e:
+                        print(f"{tag} [电梯] [警告] 到楼开门失败: {e}")
+                else:
+                    print(f"{tag} [电梯] [警告] ESP32 未连接，跳过到楼开门")
+
+                # ===== Step 6: 通知车2 电梯开门（lift-open，到达后无延迟立即发送）=====
+                await car2_sender.send_lift_open(prescription_code)
+                record_event(prescription_code, "N12_lift_open_sent", "car2", "已通知车2开门送出")
+                print(f"{tag} → 车2: lift-open")
 
                 # ===== Step 7: 等待护士到达信号 =====
                 print(f"{tag} 等待护士到达信号...")
@@ -766,6 +894,7 @@ class RosListener:
 
                 # ===== Step 8: 通知车2 护士确认 =====
                 await car2_sender.send_nurse_success(prescription_code)
+                record_event(prescription_code, "N15_task_completed", "car2", "护士已确认，任务完成")
                 print(f"{tag} → 车2: nurse-success")
                 print("=" * 60)
 

@@ -104,6 +104,13 @@ xsh*.txt
 1.txt
 2.txt
 3.txt
+.trae/
+full_backup.sql
+hospital_dashboard_backend/_dbg*.py
+hospital_dashboard_backend/dump_all.py
+ros.txt
+test.txt
+通讯工程师.txt
 
 # 其他临时文件
 *.bak
