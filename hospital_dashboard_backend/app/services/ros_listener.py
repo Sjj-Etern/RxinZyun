@@ -860,6 +860,10 @@ class RosListener:
                                 print(f"{tag} [电梯] [警告] 等待楼层到达超时（{settings.elevator_floor_arrive_timeout} 秒），兜底继续流程")
                         else:
                             print(f"{tag} [电梯] 已在{target_floor}楼，无需移动")
+                            # 同层不发 go_floor，因此 ESP32 不会产生 floor_arrived 上报；
+                            # 仍须写入 N11，避免大屏时间线停留在 N10。
+                            record_event(prescription_code, "N11_floor_arrived", "elevator",
+                                         f"电梯已在{target_floor}楼，无需移动")
                     except Exception as e:
                         print(f"{tag} [电梯] [警告] 楼层移动失败: {e}")
                 else:
