@@ -43,6 +43,7 @@ class _ScanPageState extends State<ScanPage> {
   _TraceEntry? _searchResult;
   String _searchError = '';
   bool _processing = false;
+  String _confirmingCode = '';
   String _lastCode = '';
 
   @override
@@ -136,15 +137,29 @@ class _ScanPageState extends State<ScanPage> {
     });
 
     try {
-      final response = await ApiClient().dio.post(
-        '/api/medicine-trace-codes/scan-by-code',
-        data: {'trace_code': code},
+      final response = await ApiClient().dio.get(
+        '/api/medicine-trace-codes/lookup',
+        queryParameters: {'trace_code': code},
       );
       final data = Map<String, dynamic>.from(response.data as Map);
+      if (data['prescription_id'] == null) {
+        throw DioException(
+          requestOptions: response.requestOptions,
+          message: '本药品未开处方',
+        );
+      }
+      if (data['status']?.toString() == 'scanned_confirm') {
+        throw DioException(
+          requestOptions: response.requestOptions,
+          message: '本药品已完成全部扫描',
+        );
+      }
       final entry = _entryFromData(
         data,
         code,
-        action: data['action']?.toString() ?? '扫码',
+        action: data['status']?.toString() == 'scanned_outbound'
+            ? '待确认接收'
+            : '待确认出库',
       );
       setState(() {
         _history.removeWhere(
@@ -155,26 +170,9 @@ class _ScanPageState extends State<ScanPage> {
       });
       SystemSound.play(SystemSoundType.click);
       HapticFeedback.lightImpact();
-      final message = data['completed'] == true
-          ? '追溯码已完成全部流程'
-          : '${entry.action.isEmpty ? '扫码' : entry.action}成功';
-      _showMessage(message, false);
+      _showMessage('扫码成功，请确认后录入数据库', false);
     } on DioException catch (error) {
       final message = _errorMessage(error, '扫码失败，请重试');
-      setState(() {
-        _history.insert(
-          0,
-          _TraceEntry(
-            traceCode: code,
-            medicineName: '扫码失败',
-            status: 'error',
-            action: '扫码失败',
-            time: _now(),
-            isError: true,
-            message: message,
-          ),
-        );
-      });
       HapticFeedback.heavyImpact();
       _showMessage(message, true);
     } finally {
@@ -208,6 +206,34 @@ class _ScanPageState extends State<ScanPage> {
         _searchError = message;
       });
       _showMessage(message, true);
+    }
+  }
+
+  Future<void> _confirmEntry(_TraceEntry entry) async {
+    if (_confirmingCode.isNotEmpty) return;
+    setState(() => _confirmingCode = entry.traceCode);
+    try {
+      final response = await ApiClient().dio.post(
+        '/api/medicine-trace-codes/scan-by-code',
+        data: {'trace_code': entry.traceCode},
+      );
+      final data = Map<String, dynamic>.from(response.data as Map);
+      final updatedEntry = _entryFromData(
+        data,
+        entry.traceCode,
+        action: data['action']?.toString() ?? '已录入',
+      );
+      setState(() {
+        _history.removeWhere((item) => item.traceCode == entry.traceCode);
+        _searchResult = updatedEntry;
+      });
+      HapticFeedback.mediumImpact();
+      _showMessage('${updatedEntry.action}已确认并录入数据库', false);
+    } on DioException catch (error) {
+      HapticFeedback.heavyImpact();
+      _showMessage(_errorMessage(error, '确认录入失败，请重试'), true);
+    } finally {
+      if (mounted) setState(() => _confirmingCode = '');
     }
   }
 
@@ -285,7 +311,7 @@ class _ScanPageState extends State<ScanPage> {
                 const Padding(
                   padding: EdgeInsets.fromLTRB(8, 4, 8, 14),
                   child: Text(
-                    '使用扫码枪完成药品出库与接收确认，实时保留本次操作记录。',
+                    '扫码后先暂存药品信息，确认后才会录入数据库。',
                     style: TextStyle(color: Colors.grey, fontSize: 13),
                   ),
                 ),
@@ -355,14 +381,14 @@ class _ScanPageState extends State<ScanPage> {
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
                           Text(
-                            _processing ? '正在写入出库记录…' : '每次扫码推进一个业务节点',
+                            _processing ? '正在读取药品信息…' : '扫码不会直接写入数据库',
                             style: const TextStyle(
                               color: Colors.grey,
                               fontSize: 11,
                             ),
                           ),
                           const Text(
-                            '2 次完成闭环',
+                            '确认后录入',
                             style: TextStyle(color: Colors.grey, fontSize: 11),
                           ),
                         ],
@@ -429,7 +455,7 @@ class _ScanPageState extends State<ScanPage> {
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
                           const Text(
-                            '扫码记录',
+                            '待确认扫码',
                             style: TextStyle(
                               fontSize: 17,
                               fontWeight: FontWeight.w900,
@@ -459,7 +485,7 @@ class _ScanPageState extends State<ScanPage> {
                                 ),
                                 SizedBox(height: 8),
                                 Text(
-                                  '等待第一条扫码记录',
+                                  '暂无待确认药品',
                                   style: TextStyle(
                                     fontWeight: FontWeight.w700,
                                     color: Colors.grey,
@@ -467,7 +493,7 @@ class _ScanPageState extends State<ScanPage> {
                                 ),
                                 SizedBox(height: 3),
                                 Text(
-                                  '扫描成功或失败后，记录会从这里显示',
+                                  '扫描成功后，药品信息会暂存在这里',
                                   style: TextStyle(
                                     color: Colors.grey,
                                     fontSize: 11,
@@ -588,7 +614,26 @@ class _ScanPageState extends State<ScanPage> {
             ),
           ),
           const SizedBox(width: 8),
-          _StatusPill(label: _statusLabel(entry.status), color: color),
+          SizedBox(
+            width: 88,
+            child: FilledButton(
+              onPressed: _confirmingCode.isEmpty
+                  ? () => unawaited(_confirmEntry(entry))
+                  : null,
+              style: FilledButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 9),
+                backgroundColor: const Color(0xFF00897B),
+              ),
+              child: Text(
+                _confirmingCode == entry.traceCode
+                    ? '录入中…'
+                    : entry.status == 'scanned_outbound'
+                        ? '确认接收'
+                        : '确认出库',
+                style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w800),
+              ),
+            ),
+          ),
         ],
       ),
     );

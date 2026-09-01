@@ -146,6 +146,41 @@ class _PrescriptionDetailPageState extends State<PrescriptionDetailPage> {
     });
 
     try {
+      final lookupResponse = await ApiClient().dio.get(
+        '/api/medicine-trace-codes/lookup',
+        queryParameters: {'trace_code': code},
+      );
+      final lookupData = Map<String, dynamic>.from(lookupResponse.data as Map);
+      if (lookupData['prescription_id'] == null) {
+        throw DioException(
+          requestOptions: lookupResponse.requestOptions,
+          message: '本药品未开处方',
+        );
+      }
+      if (lookupData['status']?.toString() == 'scanned_confirm') {
+        throw DioException(
+          requestOptions: lookupResponse.requestOptions,
+          message: '本药品已完成全部扫描',
+        );
+      }
+
+      if (!mounted) return;
+      final action = lookupData['status']?.toString() == 'scanned_outbound'
+          ? '确认接收'
+          : '确认出库';
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('确认扫码结果'),
+          content: Text('药品：${lookupData['medicine_name'] ?? '未命名药品'}\n追溯码：${lookupData['trace_code'] ?? code}\n\n确认后将写入数据库。'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('取消')),
+            FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: Text(action)),
+          ],
+        ),
+      );
+      if (confirmed != true) return;
+
       final response = await ApiClient().dio.post(
         '/api/medicine-trace-codes/scan-by-code',
         data: {'trace_code': code},
