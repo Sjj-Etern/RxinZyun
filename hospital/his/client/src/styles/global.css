@@ -2157,6 +2157,10 @@ textarea.glass-input {
   color: var(--text-muted);
   font-size: 11px;
 }
+.outbound-entry__confirm {
+  min-width: 88px;
+  white-space: nowrap;
+}
 .outbound-status {
   white-space: nowrap;
   padding: 6px 9px;
@@ -2253,7 +2257,8 @@ textarea.glass-input {
     width: 38px;
     height: 38px;
   }
-  .outbound-entry .outbound-status {
+  .outbound-entry .outbound-status,
+  .outbound-entry__confirm {
     grid-column: 2;
     justify-self: start;
   }

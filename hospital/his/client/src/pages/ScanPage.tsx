@@ -109,6 +109,7 @@ export default function ScanPage() {
   const [searchError, setSearchError] = useState('');
   const [toast, setToast] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
   const [processing, setProcessing] = useState(false);
+  const [confirmingCode, setConfirmingCode] = useState('');
 
   const busyRef = useRef(false);
   const lastCodeRef = useRef('');
@@ -131,27 +132,22 @@ export default function ScanPage() {
     setSearchError('');
 
     try {
-      const data = await medicineTraceCodeApi.scanByCode(code);
-      const entry = toEntry(data, code, data.action || '扫码');
+      const data = await medicineTraceCodeApi.lookup(code);
+      if (!data.prescription_id) {
+        throw new Error('本药品未开处方');
+      }
+      if (data.status === 'scanned_confirm') {
+        throw new Error('本药品已完成全部扫描');
+      }
+
+      const entry = toEntry(data, code, data.status === 'scanned_outbound' ? '待确认接收' : '待确认出库');
       setHistory((current) => [entry, ...current.filter((item) => item.trace_code !== entry.trace_code)]);
       setSearchResult(entry);
       playBeep();
-      showToast(data.completed ? '追溯码已完成全部流程' : `${data.action || '扫码'}成功`, 'success');
+      showToast('扫码成功，请药师在右侧确认录入', 'success');
     } catch (err: any) {
       const message = err.response?.data?.error || err.message || '扫码失败，请重试';
-      setHistory((current) => [{
-        id: `error-${Date.now()}`,
-        trace_code: code,
-        medicine_name: '扫码失败',
-        status: 'error',
-        action: '扫码失败',
-        scan1_time: null,
-        scan2_time: null,
-        scan3_time: null,
-        time: formatDateTime(new Date()),
-        kind: 'error',
-        message,
-      }, ...current]);
+      showToast(message, 'error');
     } finally {
       busyRef.current = false;
       setProcessing(false);
@@ -206,13 +202,29 @@ export default function ScanPage() {
     }
   };
 
+  const handleConfirm = async (entry: TraceEntry) => {
+    if (confirmingCode) return;
+    setConfirmingCode(entry.trace_code);
+    try {
+      const data = await medicineTraceCodeApi.scanByCode(entry.trace_code);
+      setHistory((current) => current.filter((item) => item.trace_code !== entry.trace_code));
+      setSearchResult(toEntry(data, entry.trace_code, data.action || '已录入'));
+      showToast(`${data.action || '药品'}已确认并录入数据库`, 'success');
+    } catch (err: any) {
+      const message = err.response?.data?.error || err.message || '确认录入失败，请重试';
+      showToast(message, 'error');
+    } finally {
+      setConfirmingCode('');
+    }
+  };
+
   return (
     <div className="outbound-page">
       <div className="page-header outbound-page__header">
         <div>
           <div className="outbound-eyebrow"><span className="outbound-eyebrow__dot" /> TRACE DESK / 出库工作台</div>
           <h1>出库追溯</h1>
-          <p>使用扫码枪完成药品出库与接收确认，实时保留本次操作记录。</p>
+          <p>扫码后先暂存药品信息，药师确认后才会录入数据库。</p>
         </div>
       </div>
 
@@ -256,17 +268,17 @@ export default function ScanPage() {
               <ModuleIcon name="scannerGun" size={138} />
             </div>
             <h2>请使用扫码枪扫码</h2>
-            <p>将光标移出输入框，扫码枪读取追溯码后会自动提交。</p>
-            {processing && <div className="outbound-station__status"><span className="outbound-station__status-dot" />正在写入出库记录…</div>}
+            <p>将光标移出输入框，扫码枪读取追溯码后会加入右侧待确认列表。</p>
+            {processing && <div className="outbound-station__status"><span className="outbound-station__status-dot" />正在读取药品信息…</div>}
           </div>
-          <div className="outbound-station__footer"><span>每次扫码推进一个业务节点</span><span>2 次完成闭环</span></div>
+          <div className="outbound-station__footer"><span>扫码不会直接写入数据库</span><span>药师确认后录入</span></div>
         </motion.div>
 
         <section className="outbound-history glass-card">
           <div className="outbound-history__header">
             <div>
-              <div className="outbound-eyebrow">LIVE LOG / 实时记录</div>
-              <h2>扫码记录</h2>
+              <div className="outbound-eyebrow">PENDING / 临时暂存</div>
+              <h2>待确认扫码</h2>
             </div>
             <span className="outbound-history__count">{history.length.toString().padStart(2, '0')} 条</span>
           </div>
@@ -275,8 +287,8 @@ export default function ScanPage() {
               {history.length === 0 ? (
                 <motion.div className="outbound-history__empty" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
                   <ModuleIcon name="scannerGun" size={58} />
-                  <strong>等待第一条扫码记录</strong>
-                  <span>扫描成功后，记录会从这里弹出</span>
+                  <strong>暂无待确认药品</strong>
+                  <span>扫码成功后，药品信息会暂存在这里</span>
                 </motion.div>
               ) : history.map((entry, index) => (
                 <motion.div
@@ -294,9 +306,13 @@ export default function ScanPage() {
                     <code>{entry.trace_code}</code>
                     <span>{entry.time}</span>
                   </div>
-                  <span className={`outbound-status outbound-status--${STATUS_TONE[entry.status] || 'pending'}`}>
-                    {STATUS_LABEL[entry.status] || entry.action || '已记录'}
-                  </span>
+                  <button
+                    className="glass-btn glass-btn--primary glass-btn--sm outbound-entry__confirm"
+                    disabled={Boolean(confirmingCode)}
+                    onClick={() => void handleConfirm(entry)}
+                  >
+                    {confirmingCode === entry.trace_code ? '录入中…' : entry.status === 'scanned_outbound' ? '确认接收' : '确认出库'}
+                  </button>
                 </motion.div>
               ))}
             </AnimatePresence>

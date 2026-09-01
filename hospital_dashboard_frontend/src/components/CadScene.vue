@@ -204,11 +204,12 @@ const modeClass = computed(() => 'tag-realtime')
       <!-- ============ 左侧：车1 地图 ============ -->
       <div class="map-pane">
         <div class="pane-header">
-          <span class="pane-title">车1 实时地图</span>
+          <span class="pane-title">车1 行动轨迹</span>
           <span class="pane-tag" :class="car1.hasMap ? 'tag-ok' : 'tag-wait'">
             {{ car1.hasMap ? `已同步 · ${car1.mapName}` : '待同步' }}
           </span>
         </div>
+
         <div class="pane-body">
           <svg
             v-if="car1.hasMap && car1.mapSize.w"
@@ -255,7 +256,7 @@ const modeClass = computed(() => 'tag-realtime')
       <!-- ============ 右侧：车2 地图 ============ -->
       <div class="map-pane">
         <div class="pane-header">
-          <span class="pane-title">车2 实时地图</span>
+          <span class="pane-title">车2 行动轨迹</span>
           <span class="pane-tag" :class="car2.hasMap ? 'tag-ok' : 'tag-wait'">
             {{ car2.hasMap ? `已同步 · ${car2.mapName}` : '待同步' }}
           </span>
