@@ -135,6 +135,7 @@ def get_events_for_prescriptions(codes: List[str]) -> Dict[str, List[dict]]:
                     "node_name": EVENT_NODE_NAMES.get(r.event_key, r.event_key),
                     "source": r.source,
                     "detail": r.detail,
+                    "created_at": r.created_at,
                     "time": r.created_at.strftime("%H:%M:%S") if r.created_at else "",
                 })
         finally:

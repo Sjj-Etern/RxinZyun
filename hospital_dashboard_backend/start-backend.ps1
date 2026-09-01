@@ -31,6 +31,17 @@ if ($listener) {
     exit 0
 }
 
+# Get-NetTCPConnection may return nothing without sufficient Windows permissions.
+# Fall back to the framework API so a duplicate launch is still detected.
+$activeListener = [System.Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners() |
+    Where-Object { $_.Port -eq 8080 } |
+    Select-Object -First 1
+if ($activeListener) {
+    Write-Host "[INFO] HTTP port 8080 is already in use." -ForegroundColor Yellow
+    Write-Host "The backend may already be running. Open http://127.0.0.1:8080/docs"
+    exit 0
+}
+
 & $python -c "import fastapi, uvicorn, requests, pymysql"
 if ($LASTEXITCODE -ne 0) {
     Write-Host "[ERROR] Missing backend dependencies. Run: $python -m pip install -r requirements.txt" -ForegroundColor Red

@@ -25,6 +25,12 @@ STREAM_HEADERS = {
     "X-Accel-Buffering": "no",
 }
 
+# Camera services are on the hospital LAN. Ignore workstation proxy variables
+# (HTTP_PROXY / HTTPS_PROXY / ALL_PROXY), which otherwise route these requests
+# away from the devices.
+DIRECT_HTTP = requests.Session()
+DIRECT_HTTP.trust_env = False
+
 # RTSP 使用 TCP，并限制底层打开/读取阻塞时间。必须在首次 VideoCapture 前设置。
 os.environ.setdefault(
     "OPENCV_FFMPEG_CAPTURE_OPTIONS",
@@ -177,7 +183,7 @@ def opencv_stream():
 def robot_camera_stream():
     """机器人摄像头1 - 代理ROS webvideo_server流"""
     try:
-        resp = requests.get(
+        resp = DIRECT_HTTP.get(
             ROBOT1_STREAM_URL,
             stream=True,
             timeout=UPSTREAM_STREAM_TIMEOUT,
@@ -204,7 +210,7 @@ def robot_camera_stream():
 def robot2_camera_stream():
     """机器人摄像头2 - 代理远程视频流"""
     try:
-        resp = requests.get(
+        resp = DIRECT_HTTP.get(
             ROBOT2_STREAM_URL,
             stream=True,
             timeout=UPSTREAM_STREAM_TIMEOUT,

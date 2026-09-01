@@ -957,7 +957,9 @@ class RosListener:
                 logger.info(f"{tag} 正在连接 ROS WebSocket: {self.ws_url}")
 
                 try:
-                    async with websockets.connect(self.ws_url) as ws:
+                    # ROS bridge is on the hospital LAN and must not use the
+                    # workstation's HTTP(S) proxy settings.
+                    async with websockets.connect(self.ws_url, proxy=None) as ws:
                         self.ros_state["listener_state"] = ROSListenerState.CONNECTED.value
                         self.latest_pose["listener_state"] = "connected"
                         logger.info(f"{tag} 已连接 Ros WebSocket: {self.ws_url}")
@@ -1034,6 +1036,7 @@ class RosListener:
 
                 except Exception as conn_err:
                     self.ros_state["listener_state"] = ROSListenerState.RECONNECTING.value
+                    self.latest_pose["listener_state"] = "disconnected"
                     print(f"{tag} [错误] WebSocket 连接失败: {conn_err}")
                     logger.error(f"WebSocket 连接失败: {conn_err}")
 

@@ -82,7 +82,7 @@ class Settings(BaseSettings):
     car1_ws_host: str
     car1_ws_port: int
     car1_topic: str  # 车1 监听的ROS Topic（接收消息）
-    car1_pose_topic: str  # 车1 实时坐标 Topic（pose publisher 发布 "x,y" 字符串）
+    car1_pose_topic: str = "/car01_pose"  # 车1 实时坐标 Topic（pose publisher 发布 "x,y" 字符串）
     car1_send_topic: str  # 车1 发送到ROS的Topic
     car1_send_msg_type: str  # 车1 发送消息的类型
 
@@ -90,15 +90,15 @@ class Settings(BaseSettings):
     car2_ws_host: str
     car2_ws_port: int
     car2_topic: str  # 车2 监听的ROS Topic（接收消息）
-    car2_pose_topic: str  # 车2 实时坐标 Topic（pose publisher 发布 "x,y" 字符串）
+    car2_pose_topic: str = "/car02_pose"  # 车2 实时坐标 Topic（pose publisher 发布 "x,y" 字符串）
     car2_send_topic: str  # 车2 发送到ROS的Topic
     car2_send_msg_type: str  # 车2 发送消息的类型
 
     # 通用ROS配置
     ros_check_interval: int  # 周期检测间隔（秒）
     ros_connect_timeout: int  # 连接超时（秒）
-    medicine_send_max_attempts: int  # 药品 start/running 重发上限（超限停止发送，防无限重发）
-    medicine_receipt_wait_timeout: int  # 重发上限后静默等待回执的最长时间（秒），超时才放弃本处方
+    medicine_send_max_attempts: int = 15  # 药品 start/running 重发上限（超限停止发送，防无限重发）
+    medicine_receipt_wait_timeout: int = 300  # 重发上限后静默等待回执的最长时间（秒），超时才放弃本处方
 
     # ===== 电梯控制配置 =====
     lift_across_delay: int  # 历史兼容字段；电梯到达后发送跨楼信号的延迟时间（秒）
@@ -114,9 +114,9 @@ class Settings(BaseSettings):
     elevator_target_floor: int  # 目标楼层（1-5）
     elevator_door_open_delay: float  # 开门动作后等待时间（秒）
     elevator_door_close_delay: float  # 关门动作后等待时间（秒）
-    elevator_go_floor_delay: float  # 每层楼层移动等待时间（秒）
+    elevator_go_floor_delay: float = 5  # 每层楼层移动等待时间（秒）
     elevator_floor_arrive_timeout: float  # 等待 ESP32 floor_arrived 上报的超时兜底（秒）
-    elevator_across_to_go_floor_delay: float  # 发 lift-across 后 → 触发电梯上楼的串行等待（秒，等车进梯）
+    elevator_across_to_go_floor_delay: float = 5  # 发 lift-across 后 → 触发电梯上楼的串行等待（秒，等车进梯）
 
     # ===== 向后兼容（旧字段名 → 映射到车1）=====
     @property

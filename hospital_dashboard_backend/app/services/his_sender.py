@@ -267,7 +267,7 @@ class HisSender:
                     pass
 
             self.ws_connection = await asyncio.wait_for(
-                websockets.connect(self.ws_url),
+                websockets.connect(self.ws_url, proxy=None),
                 timeout=settings.ros_connect_timeout
             )
 
@@ -289,7 +289,7 @@ class HisSender:
         tag = self._log_tag()
         try:
             ws = await asyncio.wait_for(
-                websockets.connect(self.ws_url),
+                websockets.connect(self.ws_url, proxy=None),
                 timeout=settings.ros_connect_timeout
             )
             await ws.close()
@@ -778,7 +778,6 @@ class HisSender:
                     if old_created_at is None and new_created_at:
                         # 重启后内存丢失，查 workflow_events 最旧事件时间作为"旧下单时间"近似
                         try:
-                            from app.services.workflow_event_service import get_events_for_prescriptions
                             _evts = get_events_for_prescriptions([new_code]).get(new_code, [])
                             if _evts:
                                 old_created_at = min(e.get("created_at") for e in _evts if e.get("created_at"))

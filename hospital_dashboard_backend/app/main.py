@@ -75,9 +75,13 @@ async def lifespan(app: FastAPI):
             send_topic=cfg["send_topic"],
             send_msg_type=cfg["send_msg_type"],
         )
-        sender_task = asyncio.create_task(sender.start())
-        _background_tasks.append(sender_task)
-        print(f"[成功] 小车{car_id} HIS Sender 已启动")
+        if car_id == 1:
+            sender_task = asyncio.create_task(sender.start())
+            _background_tasks.append(sender_task)
+            print(f"[成功] 小车{car_id} HIS Sender 已启动")
+        else:
+            # 车2 只被动发送跨梯流程信号，不主动读取处方或发送 start。
+            print(f"[成功] 小车{car_id} 信号 Sender 已注册")
 
         # 创建 ROS Listener 实例
         listener = create_listener(

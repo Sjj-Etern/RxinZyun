@@ -20,6 +20,12 @@ from app.core.config import settings, get_audio_trigger_url
 
 logger = logging.getLogger(__name__)
 
+_direct_http = requests.Session() if requests is not None else None
+if _direct_http is not None:
+    # The camera is on the hospital LAN; never route ISAPI calls through the
+    # workstation's HTTP(S) proxy.
+    _direct_http.trust_env = False
+
 
 # 全局状态存储（供 API 查询）
 _audio_state: Dict[str, Any] = {
@@ -93,7 +99,7 @@ async def play_audio_async(audio_id: int) -> bool:
         # 在 async 函数中调用同步 requests，使用 run_in_executor
         response = await asyncio.get_event_loop().run_in_executor(
             None,
-            lambda: requests.put(
+            lambda: _direct_http.put(
                 url,
                 auth=auth,
                 headers=headers,
@@ -164,7 +170,7 @@ def play_audio_sync(audio_id: int) -> bool:
     logger.info(f"正在播放语音: audio_id={audio_id}, URL={url}")
 
     try:
-        response = requests.put(
+        response = _direct_http.put(
             url,
             auth=auth,
             headers=headers,
