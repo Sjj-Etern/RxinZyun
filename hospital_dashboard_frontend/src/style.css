@@ -22,6 +22,9 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html, body {
   font-family: 'Noto Sans SC', sans-serif;
+  font-size: 16px;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: geometricPrecision;
   background: var(--bg-main);
   color: var(--text-main);
   overflow: hidden;

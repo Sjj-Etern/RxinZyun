@@ -193,7 +193,7 @@ onUnmounted(() => {
   text-shadow: 0 0 10px rgba(0, 240, 255, 0.4);
 }
 .header-subtitle {
-  font-size: 13.5px; font-family: 'Rajdhani', sans-serif;
+  font-size: 15px; font-family: 'Rajdhani', sans-serif;
   color: var(--theme-cyan);
   letter-spacing: 2px;
   text-transform: uppercase;
@@ -226,7 +226,7 @@ onUnmounted(() => {
   text-shadow: 0 0 8px rgba(255, 255, 255, 0.25);
 }
 .clock-date {
-  font-size: 13px; color: var(--text-sub); margin-top: 5px;
+  font-size: 15px; color: var(--text-sub); margin-top: 5px;
   font-family: 'Outfit', sans-serif;
   font-weight: 500;
 }
@@ -253,7 +253,7 @@ onUnmounted(() => {
   filter: drop-shadow(0 0 3px rgba(0, 240, 255, 0.5));
 }
 .weather-item .value {
-  font-size: 15px;
+  font-size: 18px;
   font-weight: bold;
   color: #ffffff;
   font-family: 'Outfit', sans-serif;
@@ -294,14 +294,14 @@ onUnmounted(() => {
 
 /* 面板头部 */
 .panel-header {
-  height: 38px; padding: 0 16px; flex-shrink: 0;
+  height: 44px; padding: 0 16px; flex-shrink: 0;
   display: flex; align-items: center; gap: 8px;
   border-bottom: var(--panel-border); 
   border-left: 3px solid var(--theme-cyan); 
   background: rgba(0, 240, 255, 0.02);
 }
 .panel-header .title { 
-  font-size: 15px; font-weight: 700; color: #ffffff;
+  font-size: 18px; font-weight: 700; color: #ffffff;
   line-height: 1.1;
   font-family: 'Noto Sans SC', sans-serif;
   letter-spacing: 0.5px;

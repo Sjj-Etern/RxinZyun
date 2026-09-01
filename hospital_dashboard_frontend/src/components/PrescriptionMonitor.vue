@@ -226,22 +226,22 @@ const dispensedPercent = computed(() => {
 }
 
 .panel-header {
-  height: 38px; padding: 0 16px; flex-shrink: 0;
+  height: 44px; padding: 0 16px; flex-shrink: 0;
   display: flex; align-items: center; gap: 8px;
   border-bottom: var(--panel-border); 
   border-left: 3px solid var(--theme-cyan); 
   background: rgba(0, 240, 255, 0.02);
 }
 .panel-header .title { 
-  font-size: 15px; font-weight: 700; color: #ffffff;
+  font-size: 18px; font-weight: 700; color: #ffffff;
   line-height: 1.1;
   font-family: 'Noto Sans SC', sans-serif;
   letter-spacing: 0.5px;
 }
-.header-svg { width: 16px; height: 16px; color: var(--theme-cyan); }
+.header-svg { width: 19px; height: 19px; color: var(--theme-cyan); }
 
 .flow-count {
-  margin-left: auto; font-size: 11px; font-weight: 700;
+  margin-left: auto; font-size: 13px; font-weight: 700;
   background: var(--theme-cyan); color: #020712;
   padding: 2px 6px; border-radius: 0;
   font-family: 'Rajdhani', sans-serif;
@@ -274,8 +274,8 @@ const dispensedPercent = computed(() => {
 .kpi-card.info { border-left: 3px solid var(--theme-cyan); }
 
 .kpi-info { display: flex; flex-direction: column; }
-.kpi-label { font-size: 11px; color: var(--text-sub); }
-.kpi-val { font-size: 22px; font-weight: 700; font-family: 'Rajdhani', sans-serif; }
+.kpi-label { font-size: 14px; color: var(--text-sub); }
+.kpi-val { font-size: 27px; font-weight: 700; font-family: 'Rajdhani', sans-serif; }
 .kpi-card.warning .kpi-val { color: var(--theme-orange); }
 .kpi-card.success .kpi-val { color: var(--theme-green); }
 .kpi-card.info .kpi-val { color: var(--theme-cyan); }
@@ -317,18 +317,18 @@ const dispensedPercent = computed(() => {
 .patient-card.completed-card { opacity: 0.4; }
 
 .card-row-top { display: flex; justify-content: space-between; align-items: center; }
-.patient-name { font-size: 16px; font-weight: 900; color: #ffffff; }
-.patient-time { font-size: 12px; color: var(--text-sub); font-family: 'Share Tech Mono', monospace; }
+.patient-name { font-size: 18px; font-weight: 900; color: #ffffff; }
+.patient-time { font-size: 14px; color: var(--text-sub); font-family: 'Share Tech Mono', monospace; }
 
 .card-row-bottom { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
 .medicine-tags { display: flex; flex-wrap: wrap; gap: 4px; }
 .medicine-tag {
-  background: rgba(0,0,0,0.3); color: var(--text-sub); padding: 2px 6px; border-radius: 0; font-size: 11px;
+  background: rgba(0,0,0,0.3); color: var(--text-sub); padding: 3px 7px; border-radius: 0; font-size: 13px;
   border: 1px solid rgba(255, 255, 255, 0.03);
 }
 .tag-qty { color: var(--theme-cyan); font-weight: bold; margin-left: 2px; }
 
-.status-tag { padding: 3px 6px; border-radius: 0; font-size: 10px; font-weight: 700; background: rgba(0, 0, 0, 0.2); color: var(--text-muted); }
+.status-tag { padding: 4px 7px; border-radius: 0; font-size: 12px; font-weight: 700; background: rgba(0, 0, 0, 0.2); color: var(--text-muted); }
 .status-tag.completed { background: rgba(0, 255, 102, 0.1); color: var(--theme-green); border: 1px solid rgba(0, 255, 102, 0.2); }
 .status-tag.pending { background: rgba(255, 115, 0, 0.1); color: var(--theme-orange); border: 1px solid rgba(255, 115, 0, 0.2); }
 
@@ -336,7 +336,7 @@ const dispensedPercent = computed(() => {
   padding: 30px;
   text-align: center;
   color: var(--text-sub);
-  font-size: 12px;
+  font-size: 14px;
 }
 
 /* 圆环统计 */
@@ -359,10 +359,10 @@ const dispensedPercent = computed(() => {
 .chart-label { font-family: 'Outfit', sans-serif; font-size: 3.5px; fill: var(--text-sub); font-weight: bold; letter-spacing: 0.5px; }
 
 .donut-legend { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; width: 100%; padding: 0 8px; font-family: 'Outfit', sans-serif; }
-.legend-item { display: flex; align-items: center; justify-content: space-between; font-size: 11.5px; color: var(--text-sub); font-weight: bold; }
+.legend-item { display: flex; align-items: center; justify-content: space-between; font-size: 14px; color: var(--text-sub); font-weight: bold; }
 .legend-label-group { display: flex; align-items: center; gap: 6px; }
 .legend-item .dot { width: 6px; height: 6px; border-radius: 50%; }
 .legend-item .dot.warning { background: var(--theme-orange); }
 .legend-item .dot.success { background: var(--theme-green); }
-.legend-val { color: #ffffff; font-family: 'Rajdhani', sans-serif; font-size: 13px; }
+.legend-val { color: #ffffff; font-family: 'Rajdhani', sans-serif; font-size: 16px; }
 </style>

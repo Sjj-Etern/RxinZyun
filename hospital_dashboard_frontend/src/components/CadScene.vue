@@ -320,7 +320,7 @@ const modeClass = computed(() => 'tag-realtime')
   justify-content: flex-end;
 }
 .status-tag {
-  font-size: 12px;
+  font-size: 14px;
   padding: 2px 10px;
   border-radius: 8px;
   font-weight: 600;
@@ -366,12 +366,12 @@ const modeClass = computed(() => 'tag-realtime')
 }
 .pane-title {
   color: #5ad8ff;
-  font-size: 14px;
+  font-size: 17px;
   font-weight: 600;
   letter-spacing: 1px;
 }
 .pane-tag {
-  font-size: 11px;
+  font-size: 13px;
   padding: 2px 8px;
   border-radius: 8px;
 }
@@ -413,7 +413,7 @@ const modeClass = computed(() => 'tag-realtime')
   margin-bottom: 8px;
 }
 .placeholder-hint {
-  font-size: 13px;
+  font-size: 15px;
   color: #3a5070;
   line-height: 1.6;
 }

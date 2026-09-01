@@ -137,14 +137,14 @@ watch(() => props.streamUrl, () => {
 }
 
 .panel-header {
-  height: 38px; padding: 0 16px; flex-shrink: 0;
+  height: 44px; padding: 0 16px; flex-shrink: 0;
   display: flex; align-items: center; gap: 8px;
   border-bottom: var(--panel-border);
   border-left: 3px solid var(--theme-cyan);
   background: rgba(0, 240, 255, 0.02);
 }
 .panel-header .title {
-  font-size: 15px; font-weight: 700; color: #ffffff;
+  font-size: 18px; font-weight: 700; color: #ffffff;
   line-height: 1.1;
   font-family: 'Noto Sans SC', sans-serif;
   letter-spacing: 0.5px;

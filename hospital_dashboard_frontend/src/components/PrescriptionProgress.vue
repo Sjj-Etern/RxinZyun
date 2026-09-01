@@ -10,6 +10,7 @@ const PRESCRIPTION_LIMIT = parseInt(import.meta.env.VITE_PRESCRIPTION_LIMIT_PROG
 const prescriptions = ref([])
 const loading = ref(false)
 const error = ref('')
+const isExpanded = ref(false)
 
 // 15 节点的阶段分组（竖向时间线按阶段分段展示）
 const PHASES = [
@@ -44,13 +45,19 @@ const fetchProgress = async () => {
 
 let timer = null
 
+const handleKeydown = (event) => {
+  if (event.key === 'Escape' && isExpanded.value) isExpanded.value = false
+}
+
 onMounted(() => {
   fetchProgress()
   timer = setInterval(fetchProgress, POLL_INTERVAL)
+  window.addEventListener('keydown', handleKeydown)
 })
 
 onUnmounted(() => {
   if (timer) clearInterval(timer)
+  window.removeEventListener('keydown', handleKeydown)
 })
 
 // 按阶段切分时间线节点
@@ -81,16 +88,48 @@ const selectedPresc = computed(() => {
 const selectPresc = (presc) => {
   selectedCode.value = presc.prescription_code
 }
+
+const selectedIndex = computed(() => {
+  if (!selectedPresc.value) return -1
+  return prescriptions.value.findIndex(p => p.prescription_code === selectedPresc.value.prescription_code)
+})
+
+const selectRelative = (offset) => {
+  if (!prescriptions.value.length) return
+  const current = selectedIndex.value < 0 ? 0 : selectedIndex.value
+  const next = Math.min(prescriptions.value.length - 1, Math.max(0, current + offset))
+  selectPresc(prescriptions.value[next])
+}
+
+const openExpanded = () => {
+  if (selectedPresc.value) isExpanded.value = true
+}
 </script>
 
 <template>
-  <div class="right-panel-wrapper panel">
+  <div class="right-panel-wrapper panel" :class="{ 'is-expanded': isExpanded }">
     <div class="panel-header">
       <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="header-svg">
         <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 12h16.5m-16.5 3.75h16.5M3.75 19.5h16.5M5.625 4.5h12.75c.621 0 1.125.504 1.125 1.125v12.75c0 .621-.504 1.125-1.125 1.125H5.625a1.125 1.125 0 0 1-1.125-1.125V5.625c0-.621.504-1.125 1.125-1.125Z" />
       </svg>
       <span class="title">药品实时追踪</span>
       <span class="flow-count">{{ prescriptions.length }} 案运行中</span>
+      <button
+        v-if="selectedPresc"
+        class="expand-button"
+        type="button"
+        :aria-label="isExpanded ? '关闭15节点放大视图' : '放大15节点视图'"
+        :title="isExpanded ? '关闭（Esc）' : '点击放大15节点'"
+        @click="isExpanded = !isExpanded"
+      >
+        <svg v-if="!isExpanded" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5" />
+        </svg>
+        <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M3 8h5V3M21 8h-5V3M3 16h5v5M21 16h-5v5" />
+        </svg>
+        <span>{{ isExpanded ? '收起' : '放大' }}</span>
+      </button>
     </div>
 
     <div class="panel-body">
@@ -105,22 +144,21 @@ const selectPresc = (presc) => {
           <span>{{ error }}</span>
         </div>
 
-        <!-- 处方选择器（横向药丸） -->
-        <div v-if="prescriptions.length > 0" class="presc-tabs">
-          <button
-            v-for="presc in prescriptions"
-            :key="presc.prescription_id"
-            class="presc-tab"
-            :class="{ selected: selectedPresc && presc.prescription_code === selectedPresc.prescription_code }"
-            @click="selectPresc(presc)"
-          >
-            <span class="tab-code">{{ presc.prescription_code || '*' + presc.prescription_id }}</span>
-            <span class="tab-patient">{{ presc.patient_name || '-' }}</span>
-          </button>
-        </div>
-
         <!-- ===== 竖向 15 节点时间线 ===== -->
-        <div v-if="selectedPresc" class="timeline">
+        <div
+          v-if="selectedPresc"
+          class="timeline"
+          role="button"
+          tabindex="0"
+          :aria-label="isExpanded ? '15节点流程放大视图' : '点击放大15节点流程'"
+          @click="openExpanded"
+          @keydown.enter.prevent="openExpanded"
+          @keydown.space.prevent="openExpanded"
+        >
+          <div v-if="!isExpanded" class="timeline-expand-hint">
+            <span>15节点全流程</span>
+            <span>点击展开</span>
+          </div>
           <div
             v-for="phase in getPhases(selectedPresc)"
             :key="phase.key"
@@ -163,6 +201,38 @@ const selectPresc = (presc) => {
 
 
       </div>
+
+      <!-- 多药单切换轨道固定在面板底部，不随节点列表滚动 -->
+      <div v-if="prescriptions.length > 0" class="prescription-switcher">
+        <button
+          class="switch-arrow"
+          type="button"
+          aria-label="上一张药单"
+          :disabled="selectedIndex <= 0"
+          @click="selectRelative(-1)"
+        >‹</button>
+        <div class="presc-tabs" aria-label="药单切换">
+          <button
+            v-for="presc in prescriptions"
+            :key="presc.prescription_id"
+            class="presc-tab"
+            :class="{ selected: selectedPresc && presc.prescription_code === selectedPresc.prescription_code }"
+            type="button"
+            @click="selectPresc(presc)"
+          >
+            <span class="tab-patient">{{ presc.patient_name || '-' }}</span>
+            <span class="tab-code">{{ presc.prescription_code || '*' + presc.prescription_id }}</span>
+          </button>
+        </div>
+        <span class="switch-index">{{ selectedIndex + 1 }}/{{ prescriptions.length }}</span>
+        <button
+          class="switch-arrow"
+          type="button"
+          aria-label="下一张药单"
+          :disabled="selectedIndex >= prescriptions.length - 1"
+          @click="selectRelative(1)"
+        >›</button>
+      </div>
     </div>
   </div>
 </template>
@@ -170,6 +240,14 @@ const selectPresc = (presc) => {
 <style scoped>
 .right-panel-wrapper {
   flex: 1; min-height: 0; display: flex; flex-direction: column;
+}
+.right-panel-wrapper.is-expanded {
+  position: fixed;
+  inset: 22px;
+  z-index: 1000;
+  background: #020816;
+  border-color: rgba(0, 240, 255, 0.72);
+  box-shadow: 0 0 0 100vmax rgba(0, 4, 12, 0.82), 0 0 42px rgba(0, 240, 255, 0.18);
 }
 
 .panel {
@@ -190,33 +268,43 @@ const selectPresc = (presc) => {
 }
 
 .panel-header {
-  height: 38px; padding: 0 16px; flex-shrink: 0;
+  height: 44px; padding: 0 16px; flex-shrink: 0;
   display: flex; align-items: center; gap: 8px;
   border-bottom: var(--panel-border);
   border-left: 3px solid var(--theme-cyan);
   background: rgba(0, 240, 255, 0.02);
 }
 .panel-header .title {
-  font-size: 15px; font-weight: 700; color: #ffffff;
+  font-size: 18px; font-weight: 700; color: #ffffff;
   line-height: 1.1;
   font-family: 'Noto Sans SC', sans-serif;
   letter-spacing: 0.5px;
 }
-.header-svg { width: 16px; height: 16px; color: var(--theme-cyan); }
+.header-svg { width: 19px; height: 19px; color: var(--theme-cyan); }
 
 .flow-count {
-  margin-left: auto; font-size: 11px; font-weight: 700;
+  margin-left: auto; font-size: 13px; font-weight: 700;
   background: var(--theme-cyan); color: #020712;
   padding: 2px 6px; border-radius: 0;
   font-family: 'Rajdhani', sans-serif;
 }
+
+.expand-button {
+  height: 30px; padding: 0 10px; border: 1px solid rgba(0, 240, 255, 0.42);
+  background: rgba(0, 240, 255, 0.08); color: var(--theme-cyan);
+  display: inline-flex; align-items: center; gap: 5px; cursor: pointer;
+  font: 700 13px/1 'Noto Sans SC', sans-serif;
+}
+.expand-button:hover,
+.expand-button:focus-visible { background: rgba(0, 240, 255, 0.16); outline: 2px solid rgba(0, 240, 255, 0.34); outline-offset: 2px; }
+.expand-button svg { width: 15px; height: 15px; }
 
 .panel-body {
   flex: 1; overflow: hidden; position: relative; min-height: 0; display: flex; flex-direction: column;
 }
 
 .scroll-container {
-  width: 100%; height: 100%; padding: 12px;
+  width: 100%; flex: 1; min-height: 0; padding: 12px;
   overflow-y: auto; display: flex; flex-direction: column; gap: 10px;
 }
 .scroll-container::-webkit-scrollbar { width: 4px; }
@@ -230,43 +318,76 @@ const selectPresc = (presc) => {
   justify-content: center;
   height: 100%;
   color: var(--text-sub);
-  font-size: 14px;
+  font-size: 16px;
 }
 
 .error-state {
   color: var(--theme-orange);
 }
 
-/* ===== 处方选择器 ===== */
+/* ===== 底部药单切换轨道 ===== */
+.prescription-switcher {
+  flex-shrink: 0; min-height: 68px; padding: 8px 10px;
+  border-top: 1px solid rgba(0, 240, 255, 0.28);
+  background: linear-gradient(180deg, rgba(4, 16, 36, 0.96), rgba(2, 9, 24, 0.98));
+  display: grid; grid-template-columns: 32px minmax(0, 1fr) auto 32px; gap: 8px; align-items: center;
+}
 .presc-tabs {
-  display: flex; gap: 8px; overflow-x: auto; flex-shrink: 0;
-  padding-bottom: 4px;
+  display: flex; gap: 8px; overflow-x: auto; min-width: 0;
+  padding: 2px 0 5px;
 }
 .presc-tabs::-webkit-scrollbar { height: 3px; }
 .presc-tabs::-webkit-scrollbar-thumb { background: var(--theme-cyan); }
 
 .presc-tab {
-  flex-shrink: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
-  padding: 5px 10px; cursor: pointer;
+  flex: 0 0 min(190px, 72%); display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+  padding: 7px 10px; cursor: pointer;
   background: var(--bg-panel-sub); border: var(--panel-border);
-  border-left: 2px solid transparent;
-  transition: border-color 0.2s, background 0.2s;
+  border-bottom: 2px solid transparent;
+  transition: border-color 0.2s, background 0.2s, transform 0.2s;
 }
-.presc-tab:hover { border-left-color: var(--theme-cyan); }
+.presc-tab:hover { border-bottom-color: var(--theme-cyan); transform: translateY(-1px); }
+.presc-tab:focus-visible { outline: 2px solid var(--theme-cyan); outline-offset: -2px; }
 .presc-tab.selected {
-  border-left-color: var(--theme-cyan);
-  background: rgba(0, 240, 255, 0.06);
+  border-bottom-color: var(--theme-cyan);
+  background: rgba(0, 240, 255, 0.1);
 }
 .tab-code {
-  font-family: 'Share Tech Mono', monospace; font-size: 10px; font-weight: 700;
-  color: var(--theme-cyan);
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: 'Share Tech Mono', monospace; font-size: 12px; font-weight: 700;
+  color: var(--text-sub);
 }
-.tab-patient { font-size: 12px; font-weight: 700; color: #ffffff; }
+.tab-patient { font-size: 15px; font-weight: 800; color: #ffffff; }
+.presc-tab.selected .tab-patient,
+.presc-tab.selected .tab-code { color: var(--theme-cyan); }
+.switch-arrow {
+  width: 32px; height: 42px; border: 1px solid rgba(0, 240, 255, 0.28);
+  background: rgba(0, 240, 255, 0.06); color: var(--theme-cyan); cursor: pointer;
+  font: 500 26px/1 'Rajdhani', sans-serif;
+}
+.switch-arrow:hover:not(:disabled),
+.switch-arrow:focus-visible { background: rgba(0, 240, 255, 0.16); outline: none; }
+.switch-arrow:disabled { opacity: 0.24; cursor: default; }
+.switch-index {
+  min-width: 38px; text-align: center; color: var(--theme-cyan);
+  font: 700 14px/1 'Share Tech Mono', monospace;
+}
 
 /* ===== 竖向 15 节点时间线 ===== */
 .timeline {
   display: flex; flex-direction: column; gap: 10px; flex-shrink: 0;
+  cursor: zoom-in; position: relative;
+  transition: background 0.2s;
 }
+.timeline:hover .timeline-expand-hint,
+.timeline:focus-visible .timeline-expand-hint { border-color: var(--theme-cyan); background: rgba(0, 240, 255, 0.12); }
+.timeline:focus-visible { outline: 2px solid rgba(0, 240, 255, 0.5); outline-offset: 3px; }
+.timeline-expand-hint {
+  min-height: 32px; padding: 0 10px; border: 1px dashed rgba(0, 240, 255, 0.28);
+  display: flex; align-items: center; justify-content: space-between;
+  color: var(--text-sub); font-size: 13px; font-weight: 700;
+}
+.timeline-expand-hint span:last-child { color: var(--theme-cyan); }
 
 .phase-group {
   background: var(--bg-panel-sub); border: var(--panel-border);
@@ -280,11 +401,11 @@ const selectPresc = (presc) => {
   background: rgba(0, 240, 255, 0.02);
 }
 .phase-name {
-  font-size: 12px; font-weight: 700; color: var(--text-main);
+  font-size: 15px; font-weight: 700; color: var(--text-main);
   letter-spacing: 1px;
 }
 .phase-badge {
-  font-size: 10px; font-weight: 700; font-family: 'Rajdhani', sans-serif;
+  font-size: 13px; font-weight: 700; font-family: 'Rajdhani', sans-serif;
   color: var(--theme-cyan);
 }
 
@@ -337,21 +458,54 @@ const selectPresc = (presc) => {
   display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
 }
 .tl-title {
-  font-size: 12px; font-weight: 700; color: var(--text-sub);
+  font-size: 15px; font-weight: 700; color: var(--text-sub);
 }
 .tl-node.active .tl-title { color: var(--theme-cyan); }
 .tl-node.completed .tl-title { color: var(--text-main); }
 
 .tl-time {
-  font-family: 'Share Tech Mono', monospace; font-size: 10px;
+  font-family: 'Share Tech Mono', monospace; font-size: 12px;
   color: var(--text-muted); flex-shrink: 0;
 }
 .tl-node.active .tl-time { color: var(--theme-cyan); }
 
 .tl-desc {
-  display: block; font-size: 10px; color: var(--theme-cyan);
-  font-weight: 700; margin-top: 1px;
+  display: block; font-size: 12px; color: var(--theme-cyan);
+  font-weight: 700; margin-top: 2px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.is-expanded .panel-header { height: 54px; padding: 0 22px; }
+.is-expanded .panel-header .title { font-size: 22px; }
+.is-expanded .scroll-container { padding: 18px 20px; }
+.is-expanded .timeline {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 18px; cursor: default; align-items: stretch; flex: 1;
+}
+.is-expanded .phase-group { min-height: 100%; border-color: rgba(0, 240, 255, 0.24); }
+.is-expanded .phase-header { padding: 11px 16px; }
+.is-expanded .phase-name { font-size: 18px; }
+.is-expanded .phase-badge { font-size: 15px; }
+.is-expanded .phase-body { padding: 14px 16px 8px; }
+.is-expanded .tl-node { gap: 13px; }
+.is-expanded .tl-rail { width: 20px; }
+.is-expanded .tl-dot { width: 17px; height: 17px; }
+.is-expanded .tl-dot .dot-check { width: 11px; height: 11px; }
+.is-expanded .tl-content { padding-bottom: 16px; }
+.is-expanded .tl-title { font-size: 17px; }
+.is-expanded .tl-time { font-size: 14px; }
+.is-expanded .tl-desc { font-size: 14px; margin-top: 4px; white-space: normal; line-height: 1.45; }
+.is-expanded .prescription-switcher { min-height: 78px; padding: 10px 18px; }
+.is-expanded .presc-tab { flex-basis: 220px; }
+
+@media (max-width: 1100px) {
+  .right-panel-wrapper.is-expanded { inset: 10px; }
+  .is-expanded .timeline { grid-template-columns: 1fr; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tl-node.active .tl-dot { animation: none; }
+  .presc-tab { transition: none; }
 }
 
 </style>
