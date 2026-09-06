@@ -6,6 +6,11 @@ const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8080'
 const POLL_INTERVAL = parseInt(import.meta.env.VITE_POLL_INTERVAL_PROGRESS || '5000')
 const PRESCRIPTION_LIMIT = parseInt(import.meta.env.VITE_PRESCRIPTION_LIMIT_PROGRESS || '20')
 
+const props = defineProps({
+  temperature: { type: Number, default: 26 },
+  humidity: { type: Number, default: 60 },
+})
+
 // 处方进度条数据列表
 const prescriptions = ref([])
 const loading = ref(false)
@@ -101,9 +106,7 @@ const selectRelative = (offset) => {
   selectPresc(prescriptions.value[next])
 }
 
-const openExpanded = () => {
-  if (selectedPresc.value) isExpanded.value = true
-}
+const isHighTemperature = computed(() => props.temperature > 30)
 </script>
 
 <template>
@@ -148,17 +151,8 @@ const openExpanded = () => {
         <div
           v-if="selectedPresc"
           class="timeline"
-          role="button"
-          tabindex="0"
-          :aria-label="isExpanded ? '15节点流程放大视图' : '点击放大15节点流程'"
-          @click="openExpanded"
-          @keydown.enter.prevent="openExpanded"
-          @keydown.space.prevent="openExpanded"
+          :aria-label="isExpanded ? '15节点流程放大视图' : '15节点流程'"
         >
-          <div v-if="!isExpanded" class="timeline-expand-hint">
-            <span>15节点全流程</span>
-            <span>点击展开</span>
-          </div>
           <div
             v-for="phase in getPhases(selectedPresc)"
             :key="phase.key"
@@ -174,7 +168,7 @@ const openExpanded = () => {
                 v-for="(node, ni) in phase.nodes"
                 :key="node.id"
                 class="tl-node"
-                :class="[node.status, { 'last-in-phase': ni === phase.nodes.length - 1 }]"
+                :class="[node.status, { 'last-in-phase': ni === phase.nodes.length - 1, 'temperature-alert': isHighTemperature }]"
               >
                 <!-- 左列：圆点 + 连接线 -->
                 <div class="tl-rail">
@@ -283,7 +277,7 @@ const openExpanded = () => {
 .header-svg { width: 19px; height: 19px; color: var(--theme-cyan); }
 
 .flow-count {
-  margin-left: auto; font-size: 13px; font-weight: 700;
+  margin-left: 0; font-size: 13px; font-weight: 700;
   background: var(--theme-cyan); color: #020712;
   padding: 2px 6px; border-radius: 0;
   font-family: 'Rajdhani', sans-serif;
@@ -376,19 +370,9 @@ const openExpanded = () => {
 /* ===== 竖向 15 节点时间线 ===== */
 .timeline {
   display: flex; flex-direction: column; gap: 10px; flex-shrink: 0;
-  cursor: zoom-in; position: relative;
+  cursor: default; position: relative;
   transition: background 0.2s;
 }
-.timeline:hover .timeline-expand-hint,
-.timeline:focus-visible .timeline-expand-hint { border-color: var(--theme-cyan); background: rgba(0, 240, 255, 0.12); }
-.timeline:focus-visible { outline: 2px solid rgba(0, 240, 255, 0.5); outline-offset: 3px; }
-.timeline-expand-hint {
-  min-height: 32px; padding: 0 10px; border: 1px dashed rgba(0, 240, 255, 0.28);
-  display: flex; align-items: center; justify-content: space-between;
-  color: var(--text-sub); font-size: 13px; font-weight: 700;
-}
-.timeline-expand-hint span:last-child { color: var(--theme-cyan); }
-
 .phase-group {
   background: var(--bg-panel-sub); border: var(--panel-border);
 }
@@ -473,6 +457,12 @@ const openExpanded = () => {
   display: block; font-size: 12px; color: var(--theme-cyan);
   font-weight: 700; margin-top: 2px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.tl-node.temperature-alert .tl-title,
+.tl-node.temperature-alert .tl-time,
+.tl-node.temperature-alert .tl-desc {
+  color: #ffd84d;
+  text-shadow: 0 0 7px rgba(255, 216, 77, 0.7);
 }
 
 .is-expanded .panel-header { height: 54px; padding: 0 22px; }

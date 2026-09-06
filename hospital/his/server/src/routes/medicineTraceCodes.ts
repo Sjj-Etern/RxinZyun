@@ -3,7 +3,7 @@ import http from 'http';
 import https from 'https';
 import pool from '../db';
 import { authMiddleware } from '../middleware/auth';
-import { appendAuditRecord } from '../services/auditChain';
+import { appendCompletedScanStages } from '../services/auditChain';
 import { config } from '../config';
 
 const router = Router();
@@ -180,6 +180,8 @@ const findTraceCodeByInputForUpdate = async (conn: any, traceCodeInput: unknown)
   return rows[0] || null;
 };
 
+// 【通信工程师负责】以下事件桥接代码：将 HIS 扫码进度/完成状态通过 HTTP
+// 通知调度后端；追溯码本身的扫码校验与状态写入由硬件工程师负责。
 // 节点3扫码复核完成后通知医院大屏后端，触发车2继续配送。
 // 节点3对应所有追溯码第一次实际扫码完成（判定含 scanned_outbound 与 scanned_confirm，防重复扫码破坏计数）。
 function notifyBackendNode3Completed(prescriptionCode: string): void {
@@ -406,15 +408,6 @@ router.post('/', async (req: Request, res: Response) => {
     );
     const userInsertId = (result as any).insertId;
 
-    await appendAuditRecord(conn, {
-      eventType: 'DRUG_INBOUND',
-      entityType: 'trace_code',
-      entityId: userInsertId,
-      flowStatus: 'inbound',
-      traceCode: normalizedTraceCode,
-      operatorId: req.user?.id,
-    });
-
     // Auto-generate remaining codes if stock > existingCount + 1
     const needCount = stock - existingCount - 1;
     const generatedCodes: string[] = [];
@@ -428,14 +421,6 @@ router.post('/', async (req: Request, res: Response) => {
         generatedCodes.push(code);
       }
       await conn.query(`INSERT INTO medicine_trace_codes (medicine_id, trace_code) VALUES ${placeholders.join(', ')}`, values);
-      await appendAuditRecord(conn, {
-        eventType: 'DRUG_INBOUND',
-        entityType: 'trace_code',
-        entityId: `batch:${medicine_id}:${userInsertId}`,
-        flowStatus: 'inbound_batch',
-        traceCodes: generatedCodes,
-        operatorId: req.user?.id,
-      });
     }
 
     await conn.commit();
@@ -663,13 +648,92 @@ router.get('/lookup', async (req: Request, res: Response) => {
     );
 
     if (rows.length === 0) {
-      res.status(404).json({ error: '追溯码未找到' });
+      const numericCode = traceCode.replace(/\D/g, '');
+      const prefix = numericCode.slice(0, 7);
+      const [matchedMedicines] = prefix.length === 7
+        ? await pool.query<any[]>(
+          `SELECT m.id AS medicine_id, m.name AS medicine_name, m.specification, m.manufacturer, m.unit
+           FROM medicine_trace_prefixes p
+           JOIN medicines m ON m.id = p.medicine_id
+           WHERE p.prefix = ? LIMIT 1`,
+          [prefix]
+        )
+        : [[]];
+      if (matchedMedicines.length) {
+        res.status(404).json({
+          error: '追溯码尚未入库',
+          can_import: true,
+          trace_code: numericCode,
+          ...matchedMedicines[0],
+        });
+        return;
+      }
+      res.status(404).json({ error: '没有对应药品类别，无法入库', can_import: false });
       return;
     }
 
     res.json(rows[0]);
   } catch (err: any) {
     res.status(500).json({ error: '服务器错误: ' + err.message });
+  }
+});
+
+// POST /api/medicine-trace-codes/register-by-prefix — 扫码确认后按前 7 位匹配药品并入库。
+router.post('/register-by-prefix', async (req: Request, res: Response) => {
+  const conn = await pool.getConnection();
+  try {
+    const traceCode = String(req.body.trace_code || '').replace(/\D/g, '');
+    if (traceCode.length < 7) {
+      res.status(400).json({ error: '追溯码至少需要 7 位数字' });
+      return;
+    }
+
+    await conn.beginTransaction();
+    const [existing] = await conn.query<any[]>(
+      'SELECT id FROM medicine_trace_codes WHERE trace_code = ? FOR UPDATE',
+      [traceCode]
+    );
+    if (existing.length) {
+      await conn.rollback();
+      res.status(409).json({ error: '该追溯码已经入库' });
+      return;
+    }
+
+    const [medicines] = await conn.query<any[]>(
+      `SELECT m.id AS medicine_id, m.name AS medicine_name, m.generic_name, m.specification,
+              m.drug_form, m.manufacturer, m.unit, m.price, m.stock, m.category,
+              m.is_narcotic, m.image_url
+       FROM medicine_trace_prefixes p
+       JOIN medicines m ON m.id = p.medicine_id
+       WHERE p.prefix = ? LIMIT 1 FOR UPDATE`,
+      [traceCode.slice(0, 7)]
+    );
+    if (!medicines.length) {
+      await conn.rollback();
+      res.status(400).json({ error: '没有对应药品类别，无法入库' });
+      return;
+    }
+
+    const medicine = medicines[0];
+    const [result] = await conn.query(
+      'INSERT INTO medicine_trace_codes (medicine_id, trace_code, status) VALUES (?, ?, ?)',
+      [medicine.medicine_id, traceCode, 'pending']
+    );
+    await conn.query('UPDATE medicines SET stock = stock + 1 WHERE id = ?', [medicine.medicine_id]);
+    await conn.commit();
+    res.status(201).json({
+      ...medicine,
+      id: Number((result as any).insertId),
+      trace_code: traceCode,
+      status: 'pending',
+      stock: Number(medicine.stock || 0) + 1,
+      action: '扫码入库',
+    });
+  } catch (err: any) {
+    await conn.rollback();
+    res.status(500).json({ error: '扫码入库失败: ' + err.message });
+  } finally {
+    conn.release();
   }
 });
 
@@ -702,17 +766,13 @@ router.put('/:id/scan', async (req: Request, res: Response) => {
 
     let updateSql: string;
     const updateParams: any[] = [];
-    let auditEventType: 'DRUG_OUTBOUND' | 'NURSE_RECEIVED' | null = null;
-
     if (currentStatus === 'pending' || currentStatus === 'scanned_identify') {
       // 两次实际扫码：第一次出库（节点3），第二次确认（节点4）。
       updateSql = 'UPDATE medicine_trace_codes SET status = ?, scan2_time = NOW(), scan2_user_id = ?, prescription_id = COALESCE(?, prescription_id) WHERE id = ?';
       updateParams.push('scanned_outbound', userId, prescriptionId, id);
-      auditEventType = 'DRUG_OUTBOUND';
     } else if (currentStatus === 'scanned_outbound') {
       updateSql = 'UPDATE medicine_trace_codes SET status = ?, scan3_time = NOW(), scan3_user_id = ?, prescription_id = COALESCE(?, prescription_id) WHERE id = ?';
       updateParams.push('scanned_confirm', userId, prescriptionId, id);
-      auditEventType = 'NURSE_RECEIVED';
     } else {
       await conn.rollback();
       res.status(400).json({ error: '该追溯码已完成全部扫描' });
@@ -721,17 +781,7 @@ router.put('/:id/scan', async (req: Request, res: Response) => {
 
     await conn.query(updateSql, updateParams);
 
-    if (auditEventType) {
-      await appendAuditRecord(conn, {
-        eventType: auditEventType,
-        entityType: 'trace_code',
-        entityId: id,
-        flowStatus: auditEventType === 'DRUG_OUTBOUND' ? 'scanned_outbound' : 'scanned_confirm',
-        traceCode: record.trace_code,
-        prescriptionId: prescriptionId || record.prescription_id,
-        operatorId: userId,
-      });
-    }
+    await appendCompletedScanStages(conn, Number(prescriptionId || record.prescription_id), userId);
 
     // Return updated record with operator names
     const [updated] = await conn.query<any[]>(
@@ -846,18 +896,14 @@ router.post('/scan-by-code', async (req: Request, res: Response) => {
     let updateSql: string;
     const updateParams: any[] = [];
     let actionName: string;
-    let auditEventType: 'DRUG_OUTBOUND' | 'NURSE_RECEIVED' | null = null;
-
     if (record.status === 'pending' || record.status === 'scanned_identify') {
       updateSql = 'UPDATE medicine_trace_codes SET status = ?, scan2_time = NOW(), scan2_user_id = ? WHERE id = ?';
       updateParams.push('scanned_outbound', userId, record.id);
       actionName = '出库';
-      auditEventType = 'DRUG_OUTBOUND';
     } else if (record.status === 'scanned_outbound') {
       updateSql = 'UPDATE medicine_trace_codes SET status = ?, scan3_time = NOW(), scan3_user_id = ? WHERE id = ?';
       updateParams.push('scanned_confirm', userId, record.id);
       actionName = '确认';
-      auditEventType = 'NURSE_RECEIVED';
     } else {
       await conn.rollback();
       res.status(400).json({ error: '本药品已出库，无法再次扫码', status: record.status, completed: true });
@@ -866,17 +912,7 @@ router.post('/scan-by-code', async (req: Request, res: Response) => {
 
     await conn.query(updateSql, updateParams);
 
-    if (auditEventType) {
-      await appendAuditRecord(conn, {
-        eventType: auditEventType,
-        entityType: 'trace_code',
-        entityId: record.id,
-        flowStatus: auditEventType === 'DRUG_OUTBOUND' ? 'scanned_outbound' : 'scanned_confirm',
-        traceCode: record.trace_code,
-        prescriptionId: record.prescription_id,
-        operatorId: userId,
-      });
-    }
+    await appendCompletedScanStages(conn, Number(record.prescription_id), userId);
 
     // Return updated record with medicine info
     const [updated] = await conn.query<any[]>(

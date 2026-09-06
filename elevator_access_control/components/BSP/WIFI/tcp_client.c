@@ -16,6 +16,8 @@
 #include "emission.h"
 #include "dht11.h"
 
+/* 【通信工程师负责】TCP 建连、重连、JSON 指令接收和 ACK 回传。
+ * 指令解析后的继电器/红外执行由硬件工程师负责。 */
 // #include "../../../main/main.h"
 
 static const char *TAG = "TCP_CLIENT";
@@ -333,4 +335,4 @@ void save_state(void)
 //     nvs_get_u8(handle, "light", &lightState);
 //     nvs_get_u8(handle, "fan", &fanState);
 //     nvs_close(handle);
-// } 
+// }

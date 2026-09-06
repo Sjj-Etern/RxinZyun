@@ -223,10 +223,10 @@ W (xxxx) APP: WS send skipped: ESP_ERR_INVALID_STATE
 
 ### 八、后续待办
 
-- [ ] 后端开发 WebSocket 服务端（监听 `/api/dht11/wifi`）
-- [ ] 后端就绪后，替换 `APP_WS_URL` 为真实地址
-- [ ] （可选）接入 SNTP 同步网络时间，使 `ts` 为绝对时间戳
-- [ ] （可选）量产阶段改用 SmartConfig / AP 配网，避免硬编码 WiFi 凭据
+后端开发 WebSocket 服务端（监听 `/api/dht11/wifi`）
+后端就绪后，替换 `APP_WS_URL` 为真实地址
+（可选）接入 SNTP 同步网络时间，使 `ts` 为绝对时间戳
+ （可选）量产阶段改用 SmartConfig / AP 配网，避免硬编码 WiFi 凭据
 
 ---
 

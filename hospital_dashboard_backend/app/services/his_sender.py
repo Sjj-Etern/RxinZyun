@@ -6,6 +6,9 @@ HIS 处方自动发送服务（多车支持版）
 
 向后兼容：保留模块级函数（start_his_sender, stop_his_sender, get_sender_status,
 notify_* 等），默认操作车1。
+
+【通信工程师负责】HIS 处方/坐标查询、ROS WebSocket Topic 生命周期、
+任务信号发布，以及机器人回执驱动的重发与同步。
 """
 import asyncio
 import json

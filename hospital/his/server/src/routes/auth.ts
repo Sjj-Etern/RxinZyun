@@ -9,7 +9,7 @@ const router = Router();
 router.post('/login', async (req: Request, res: Response) => {
   try {
     const { username, password } = req.body;
-    if (!username || !password) {
+    if (!username || typeof password !== 'string') {
       res.status(400).json({ error: '请输入用户名和密码' });
       return;
     }

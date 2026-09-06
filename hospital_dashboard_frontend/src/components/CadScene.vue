@@ -204,7 +204,7 @@ const modeClass = computed(() => 'tag-realtime')
       <!-- ============ 左侧：车1 地图 ============ -->
       <div class="map-pane">
         <div class="pane-header">
-          <span class="pane-title">车1 行动轨迹</span>
+          <span class="pane-title">取药车 行动轨迹</span>
           <span class="pane-tag" :class="car1.hasMap ? 'tag-ok' : 'tag-wait'">
             {{ car1.hasMap ? `已同步 · ${car1.mapName}` : '待同步' }}
           </span>
@@ -247,7 +247,7 @@ const modeClass = computed(() => 'tag-realtime')
             </template>
           </svg>
           <div v-else class="map-placeholder">
-            <div class="placeholder-text">车1 地图未同步</div>
+            <div class="placeholder-text">取药车 地图未同步</div>
             <div class="placeholder-hint">请运行 <code>python scripts/sync_maps.py</code></div>
           </div>
         </div>
@@ -256,7 +256,7 @@ const modeClass = computed(() => 'tag-realtime')
       <!-- ============ 右侧：车2 地图 ============ -->
       <div class="map-pane">
         <div class="pane-header">
-          <span class="pane-title">车2 行动轨迹</span>
+          <span class="pane-title">送药车 行动轨迹</span>
           <span class="pane-tag" :class="car2.hasMap ? 'tag-ok' : 'tag-wait'">
             {{ car2.hasMap ? `已同步 · ${car2.mapName}` : '待同步' }}
           </span>
@@ -294,7 +294,7 @@ const modeClass = computed(() => 'tag-realtime')
             </template>
           </svg>
           <div v-else class="map-placeholder">
-            <div class="placeholder-text">车2 地图未同步</div>
+            <div class="placeholder-text">送药车 地图未同步</div>
             <div class="placeholder-hint">请运行 <code>python scripts/sync_maps.py</code></div>
           </div>
         </div>
@@ -336,7 +336,7 @@ const modeClass = computed(() => 'tag-realtime')
   border: 1px solid rgba(255, 170, 106, 0.3);
 }
 .tag-demo {
-  color: #ff6a6a;
+  color: #ffd76a;
   background: rgba(255, 106, 106, 0.1);
   border: 1px solid rgba(255, 106, 106, 0.3);
 }

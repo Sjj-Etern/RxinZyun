@@ -27,7 +27,20 @@ export interface AuditChainRecord {
   payload_hash: string;
   previous_hash: string;
   current_hash: string;
+  snapshot_hash?: string | null;
+  change_id?: number | null;
   created_at: string;
+}
+
+export interface AuditBranchRecord {
+  kind: 'change' | 'completion' | 'continuation';
+  source_record_id: number | null;
+  event_type: string;
+  entity_id: string;
+  event_time: string;
+  payload_hash: string;
+  previous_hash: string;
+  current_hash: string;
 }
 
 export interface AuditChainVerifyResult {
@@ -37,6 +50,26 @@ export interface AuditChainVerifyResult {
   broken_at?: number;
   expected_previous_hash?: string;
   actual_previous_hash?: string;
+}
+
+export interface AuditChainChange {
+  id: number;
+  change_type?: 'updated' | 'deleted';
+  prescription_id: number;
+  prescription_code: string | null;
+  changes: Array<{ field: string; before: unknown; after: unknown }>;
+  old_snapshot_hash: string;
+  new_snapshot_hash: string;
+  actor_name: string | null;
+  actor_source: string;
+  ai_analysis: string | null;
+  ai_status: 'pending' | 'running' | 'completed' | 'rules_fallback' | 'failed';
+  status: 'pending' | 'accepted' | 'superseded';
+  detected_at: string;
+  accepted_at: string | null;
+  baseline_record_id?: number | null;
+  base_continuation_records?: AuditChainRecord[];
+  branch_records?: AuditBranchRecord[];
 }
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL,
@@ -164,6 +197,9 @@ export const medicineTraceCodeApi = {
   lookup: (trace_code: string) =>
     api.get('/medicine-trace-codes/lookup', { params: { trace_code } }).then((r) => r.data),
 
+  registerByPrefix: (trace_code: string) =>
+    api.post('/medicine-trace-codes/register-by-prefix', { trace_code }).then((r) => r.data),
+
   generateAll: () =>
     api.post('/medicine-trace-codes/generate-all').then((r) => r.data),
 
@@ -180,6 +216,21 @@ export const auditChainApi = {
 
   verify: () =>
     api.get<AuditChainVerifyResult>('/audit-chain/verify').then((r) => r.data),
+
+  inspect: () =>
+    api.post<{ changes: AuditChainChange[]; created: number }>('/audit-chain/inspect').then((r) => r.data),
+
+  analyze: (id: number) =>
+    api.post<AuditChainChange>(`/audit-chain/changes/${id}/analyze`).then((r) => r.data),
+
+  accept: (id: number) =>
+    api.post(`/audit-chain/changes/${id}/accept`).then((r) => r.data),
+
+  demoTamper: () =>
+    api.post('/audit-chain/demo/tamper').then((r) => r.data),
+
+  clear: () =>
+    api.delete('/audit-chain').then((r) => r.data),
 };
 // Prescriptions
 export const prescriptionApi = {
@@ -196,6 +247,9 @@ export const prescriptionApi = {
 
   dispense: (id: number) =>
     api.put(`/prescriptions/${id}/dispense`).then((r) => r.data),
+
+  resetTest: (id: number) =>
+    api.post(`/prescriptions/${id}/reset-test`).then((r) => r.data),
 
   delete: (id: number) =>
     api.delete(`/prescriptions/${id}`).then((r) => r.data),

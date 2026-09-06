@@ -248,7 +248,7 @@ export default function MedicinePage() {
       </motion.div>
 
       <motion.div className="search-bar" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.1 }}>
-        <input className="glass-input" placeholder="搜索药品名称或厂家..." value={keyword}
+        <input className="glass-input" placeholder="搜索药品名称、厂家或追溯码..." value={keyword}
           onChange={(e) => setKeyword(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && (setPage(1), loadList(1, keyword))} />
         <button className="glass-btn glass-btn--primary" onClick={() => { setPage(1); loadList(1, keyword); }}>搜索</button>

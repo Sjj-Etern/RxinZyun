@@ -62,4 +62,10 @@ export const config = {
     hospitalBackendUrl: required('HOSPITAL_BACKEND_URL'),
     hospitalBackendTimeoutMs: numberValue('HOSPITAL_BACKEND_TIMEOUT_MS'),
   },
+  ai: {
+    // API Key 只放在 his/.env 的 DEEPSEEK_API_KEY 中，禁止写入前端或提交到仓库。
+    deepseekApiKey: process.env.DEEPSEEK_API_KEY || '',
+    deepseekBaseUrl: process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
+    deepseekModel: process.env.DEEPSEEK_MODEL || 'deepseek-v4-pro',
+  },
 };

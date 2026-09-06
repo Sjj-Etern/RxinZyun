@@ -34,7 +34,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const allTabs: TabItem[] = [
     { to:'/dashboard', icon:'dashboard', label:'工作版' },
     { to:'/prescriptions/new', icon:'prescriptionNew', label:'开具处方', roles:['doctor','admin'] },
-    { to:'/scan', icon:'scannerGun', label:'出库追溯' },
+    { to:'/scan', icon:'scannerGun', label:'扫码追溯' },
     { to:'/dispense-management', icon:'patients', label:'发药管理' },
     { to:'/medicines', icon:'medicines', label:'药品管理' },
   ];

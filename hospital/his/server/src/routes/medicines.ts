@@ -4,10 +4,24 @@ import { authMiddleware } from '../middleware/auth';
 
 const router = Router();
 router.use(authMiddleware);
+let demoMedicineMarkerReady = false;
+
+const ensureDemoMedicineMarker = async () => {
+  if (demoMedicineMarkerReady) return;
+  const [columns] = await pool.query<any[]>(
+    `SELECT COUNT(*) AS total FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'medicines' AND COLUMN_NAME = 'is_demo_generated'`
+  );
+  if (!Number(columns[0]?.total || 0)) {
+    await pool.query("ALTER TABLE medicines ADD COLUMN is_demo_generated TINYINT(1) NOT NULL DEFAULT 0 AFTER is_narcotic");
+  }
+  demoMedicineMarkerReady = true;
+};
 
 // GET /api/medicines — list with pagination and search
 router.get('/', async (req: Request, res: Response) => {
   try {
+    await ensureDemoMedicineMarker();
     const page = parseInt(req.query.page as string) || 1;
     const pageSize = parseInt(req.query.pageSize as string) || 10;
     const keyword = (req.query.keyword as string) || '';
@@ -18,13 +32,48 @@ router.get('/', async (req: Request, res: Response) => {
     const params: any[] = [];
 
     if (keyword) {
-      const where = ' WHERE m.name LIKE ? OR m.manufacturer LIKE ?';
+      const where = ` WHERE m.name LIKE ? OR m.manufacturer LIKE ? OR m.specification LIKE ?
+        OR EXISTS (
+          SELECT 1 FROM medicine_trace_codes tc
+          WHERE tc.medicine_id = m.id AND tc.trace_code LIKE ?
+        )`;
       countSql += where;
       listSql += where;
-      params.push(`%${keyword}%`, `%${keyword}%`);
+      params.push(`%${keyword}%`, `%${keyword}%`, `%${keyword}%`, `%${keyword}%`);
     }
 
-    listSql += ' ORDER BY m.id DESC LIMIT ? OFFSET ?';
+    if (keyword) {
+      listSql += ' ORDER BY m.id DESC LIMIT ? OFFSET ?';
+    } else {
+      // 现有药品优先，生成的演示药品统一靠后；去痛片第 3 位，阿莫西林胶囊第 7 位。
+      listSql = `
+        WITH remaining AS (
+          SELECT m.*, p.prefix AS trace_code_prefix
+          FROM medicines m
+          LEFT JOIN medicine_trace_prefixes p ON m.id = p.medicine_id
+          WHERE m.name NOT IN ('去痛片', '阿莫西林胶囊')
+        ), ranked AS (
+          SELECT remaining.*, ROW_NUMBER() OVER (ORDER BY is_demo_generated ASC, id DESC) AS remaining_rank
+          FROM remaining
+        ), positioned AS (
+          SELECT ranked.*,
+                 remaining_rank + IF(remaining_rank >= 3, 1, 0) + IF(remaining_rank >= 6, 1, 0) AS display_order
+          FROM ranked
+          UNION ALL
+          SELECT m.*, p.prefix AS trace_code_prefix, NULL AS remaining_rank, 3 AS display_order
+          FROM medicines m
+          LEFT JOIN medicine_trace_prefixes p ON m.id = p.medicine_id
+          WHERE m.name = '去痛片'
+          UNION ALL
+          SELECT m.*, p.prefix AS trace_code_prefix, NULL AS remaining_rank, 7 AS display_order
+          FROM medicines m
+          LEFT JOIN medicine_trace_prefixes p ON m.id = p.medicine_id
+          WHERE m.name = '阿莫西林胶囊'
+        )
+        SELECT * FROM positioned
+        ORDER BY display_order
+        LIMIT ? OFFSET ?`;
+    }
 
     const [countRows] = await pool.query<any[]>(countSql, params);
     const total = (countRows[0] as any)?.total || 0;

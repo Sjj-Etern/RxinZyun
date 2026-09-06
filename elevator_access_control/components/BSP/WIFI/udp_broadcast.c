@@ -11,6 +11,7 @@
 #include "tcp_client.h"
 #include "wifi_.h"
 
+/* 【通信工程师负责】UDP 广播发现与后端配置接收；用于动态获得 TCP 服务端地址。 */
 static const char *TAG = "UDP";
 static int udp_sock = -1;
 static struct sockaddr_in dest_addr;

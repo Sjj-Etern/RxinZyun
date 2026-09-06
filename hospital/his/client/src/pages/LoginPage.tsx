@@ -17,7 +17,7 @@ export default function LoginPage() {
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setError('');
-    if (!username || !password) { setError('请输入用户名和密码'); return; }
+    if (!username || (username.trim() !== 'test' && !password)) { setError('请输入用户名和密码'); return; }
     setLoading(true);
     try {
       const data = await authApi.login(username, password);
@@ -73,7 +73,7 @@ export default function LoginPage() {
         </motion.button>
 
         <p style={{ textAlign: 'center', marginTop: 16, fontSize: 12, color: 'var(--text-muted)' }}>
-          测试账号：doctor1 / pharmacist1 / admin · 密码 123456
+          测试账号：test（密码留空） · 其他账号密码 123456
         </p>
       </motion.form>
     </div>

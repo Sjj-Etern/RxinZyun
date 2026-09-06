@@ -35,6 +35,9 @@ UDP 发现协议（与 ESP32 的 udp_broadcast.c 对接）：
   2. 通过 get_elevator_controller() 获取单例
   3. 调用 send_open_door() / send_close_door() / send_go_floor() 发送命令
   4. 每条命令会阻塞等待 ESP32 回传 ACK（带超时）
+
+【通信工程师负责】UDP 发现响应、TCP 长连接、JSON 命令/ACK 协议与楼层到达
+回执；ESP32 侧的继电器和红外具体执行由硬件工程师负责。
 """
 import asyncio
 import json

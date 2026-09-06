@@ -280,7 +280,7 @@ export default function PrescriptionNewPage() {
       setMedSearch('');
       setMedicines([]);
       showToast(res.message || '处方已创建，已进入可发药状态', 'success');
-      navigate('/prescriptions/new', { replace: true });
+      navigate('/scan', { replace: true });
     } catch (err: any) { setError(err.response?.data?.error || '提交失败'); }
     finally { setSubmitting(false); }
   };

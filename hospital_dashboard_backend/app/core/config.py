@@ -72,8 +72,22 @@ class Settings(BaseSettings):
 
     # ===== 摄像头语音播报配置（ISAPI） =====
     camera_audio_port: int
-    audio_id_start: int  # car_can_go - 车辆可以通行（任务启动）
-    audio_id_end: int  # car_already_arrive - 车辆已到达（药单完成）
+
+    # 任务启动语音（下药后触发）
+    audio_id_start: int = 15
+    audio_start_play_count: int = 1
+    audio_start_play_interval: int = 2
+
+    # 取药车完成语音（all_completed触发）
+    audio_id_pickup_done: int = 14
+    audio_pickup_done_play_count: int = 1
+    audio_pickup_done_play_interval: int = 2
+
+    # 送药车完成语音（nurse_arrive触发）
+    audio_id_delivered: int = 13
+    audio_delivered_play_count: int = 1
+    audio_delivered_play_interval: int = 2
+
     audio_check_interval: int  # 语音播报端口检测间隔（秒）
     audio_connect_timeout: int  # 语音播报连接超时（秒）
 

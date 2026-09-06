@@ -593,7 +593,12 @@ class RosListener:
                 if not self.audio_state["car_can_go_triggered"]:
                     print(f"{tag} 触发语音播报：单子开始（car_can_go）")
                     try:
-                        await play_audio_async(settings.audio_id_start)
+                        for i in range(settings.audio_start_play_count):
+                            if i > 0:
+                                print(f"{tag} 等待{settings.audio_start_play_interval}秒...")
+                                await asyncio.sleep(settings.audio_start_play_interval)
+                            print(f"{tag} 播放 audio_id={settings.audio_id_start} (car_can_go) - 第{i+1}次")
+                            await play_audio_async(settings.audio_id_start)
                         self.audio_state["car_can_go_triggered"] = True
                         print(f"{tag} 语音播报成功：car_can_go")
                     except Exception as audio_err:
@@ -612,43 +617,43 @@ class RosListener:
         elif status == "all_completed":
             if prescription_code:
                 if not self.audio_state["car_already_arrive_triggered"]:
-                    print(f"{tag} 触发语音播报：药单完成（收到 all_completed）")
+                    print(f"{tag} 触发语音播报：取药车完成（收到 all_completed）")
                     try:
-                        print(f"{tag} 播放 audio_id={settings.audio_id_end} (car_already_arrive) - 第1次")
-                        await play_audio_async(settings.audio_id_end)
-                        print(f"{tag} 等待2秒...")
-                        await asyncio.sleep(2)
-                        print(f"{tag} 播放 audio_id={settings.audio_id_end} (car_already_arrive) - 第2次")
-                        await play_audio_async(settings.audio_id_end)
+                        for i in range(settings.audio_pickup_done_play_count):
+                            if i > 0:
+                                print(f"{tag} 等待{settings.audio_pickup_done_play_interval}秒...")
+                                await asyncio.sleep(settings.audio_pickup_done_play_interval)
+                            print(f"{tag} 播放 audio_id={settings.audio_id_pickup_done} (pickup_done) - 第{i+1}次")
+                            await play_audio_async(settings.audio_id_pickup_done)
                         self.audio_state["car_already_arrive_triggered"] = True
-                        print(f"{tag} 语音播报成功：car_already_arrive")
+                        print(f"{tag} 语音播报成功：pickup_done")
                     except Exception as audio_err:
                         logger.error(f"语音播报失败: {audio_err}")
                         print(f"{tag} 语音播报失败: {audio_err}")
                 else:
-                    print(f"{tag} car_already_arrive 已触发过，不重复播放")
+                    print(f"{tag} pickup_done 已触发过，不重复播放")
 
         elif status == "nurse_arrive":
-            # 车2到达护士站 → 播报"药物已送达，请您确认"（连播2次，间隔2秒，每处方1轮）
+            # 车2到达护士站 → 播报"药物已送达，请您确认"（每处方1轮）
             # 判定逻辑与 all_completed 分支完全一致：要求 prescription_code 非空 + 独立幂等锁
             if prescription_code:
                 if not self.audio_state["nurse_arrive_audio_triggered"]:
-                    print(f"{tag} 触发语音播报：护士到达（收到 nurse_arrive）")
+                    print(f"{tag} 触发语音播报：送药车完成（收到 nurse_arrive）")
                     try:
-                        print(f"{tag} 播放 audio_id={settings.audio_id_end} (car_already_arrive) - 第1次")
-                        await play_audio_async(settings.audio_id_end)
-                        print(f"{tag} 等待2秒...")
-                        await asyncio.sleep(2)
-                        print(f"{tag} 播放 audio_id={settings.audio_id_end} (car_already_arrive) - 第2次")
-                        await play_audio_async(settings.audio_id_end)
+                        for i in range(settings.audio_delivered_play_count):
+                            if i > 0:
+                                print(f"{tag} 等待{settings.audio_delivered_play_interval}秒...")
+                                await asyncio.sleep(settings.audio_delivered_play_interval)
+                            print(f"{tag} 播放 audio_id={settings.audio_id_delivered} (delivered) - 第{i+1}次")
+                            await play_audio_async(settings.audio_id_delivered)
                         self.audio_state["nurse_arrive_audio_triggered"] = True
                         record_event(prescription_code, "N14_voice_broadcast", "car2", "已播报\"药物已送达，请您确认\"")
-                        print(f"{tag} 语音播报成功：nurse_arrive 到达播报")
+                        print(f"{tag} 语音播报成功：delivered")
                     except Exception as audio_err:
                         logger.error(f"语音播报失败: {audio_err}")
                         print(f"{tag} 语音播报失败: {audio_err}")
                 else:
-                    print(f"{tag} nurse_arrive 播报已触发过，不重复播放")
+                    print(f"{tag} delivered 播报已触发过，不重复播放")
 
     # ===== 获取关联的 HIS Sender =====
 
@@ -692,6 +697,9 @@ class RosListener:
 
         sender = self._get_sender()
 
+        # 【通信工程师·3-1】状态驱动式通信的核心代码——后端解析车1状态,驱动流程节点流转
+        # 通过解析机器人返回的状态信号,触发不同的后续通信动作,
+        # 实现机器人执行状态与后端任务状态同步
         # 通知 HIS Sender
         if status in ("running-started", "running_started"):
             if medicine_id is not None and prescription_code and sender:
@@ -798,10 +806,13 @@ class RosListener:
                 # （不能放在 Step 7，否则会清除流程中已 set 的 event 导致死锁）
                 self._nurse_arrive_event.clear()
 
+                # 【通信工程师·6-1】确认小车到达电梯处
                 # 收到 lift-arrive → 立即停止 ① pharmacist-success 连续发送
                 await car2_sender.stop_current_signal()
                 print(f"{tag} [车2] 已停止 pharmacist-success（收到 lift-arrive）")
 
+                # 【通信工程师·6-2】等待电梯门打开
+                # 后端通过TCP发送open_door命令给ESP32,ESP32驱动继电器模拟按键开门
                 # ===== Step 1: 开门（电梯硬件）=====
                 if elevator.is_connected():
                     print(f"{tag} [电梯] 发送开门命令...")
@@ -815,6 +826,7 @@ class RosListener:
                 else:
                     print(f"{tag} [电梯] [警告] ESP32 未连接，跳过开门")
 
+                # 【通信工程师·6-4】指挥小车进入电梯
                 # ===== Step 2: 通知车2 跨楼（lift-across）=====
                 await car2_sender.send_lift_across(prescription_code)
                 record_event(prescription_code, "N9_crossing_elevator", "car2", "车2跨梯运输中")
@@ -825,6 +837,7 @@ class RosListener:
                 print(f"{tag} 等待 {across_delay} 秒（车2进梯，lift-across → 电梯上楼 串行间隔）...")
                 await asyncio.sleep(across_delay)
 
+                # 【通信工程师·6-5】电梯关门并查看当前楼层
                 # ===== Step 4: 关门（电梯硬件）=====
                 if elevator.is_connected():
                     print(f"{tag} [电梯] 发送关门命令...")
@@ -860,10 +873,6 @@ class RosListener:
                                 print(f"{tag} [电梯] [警告] 等待楼层到达超时（{settings.elevator_floor_arrive_timeout} 秒），兜底继续流程")
                         else:
                             print(f"{tag} [电梯] 已在{target_floor}楼，无需移动")
-                            # 同层不发 go_floor，因此 ESP32 不会产生 floor_arrived 上报；
-                            # 仍须写入 N11，避免大屏时间线停留在 N10。
-                            record_event(prescription_code, "N11_floor_arrived", "elevator",
-                                         f"电梯已在{target_floor}楼，无需移动")
                     except Exception as e:
                         print(f"{tag} [电梯] [警告] 楼层移动失败: {e}")
                 else:
@@ -883,6 +892,7 @@ class RosListener:
                 else:
                     print(f"{tag} [电梯] [警告] ESP32 未连接，跳过到楼开门")
 
+                # 【通信工程师·6-6】等待电梯到站后,指挥小车离开电梯
                 # ===== Step 6: 通知车2 电梯开门（lift-open，到达后无延迟立即发送）=====
                 await car2_sender.send_lift_open(prescription_code)
                 record_event(prescription_code, "N12_lift_open_sent", "car2", "已通知车2开门送出")

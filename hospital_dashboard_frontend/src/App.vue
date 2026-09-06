@@ -9,7 +9,7 @@ import PrescriptionMonitor from './components/PrescriptionMonitor.vue'
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8080'
 
 // 温湿度数据
-const temperature = ref(24.5)
+const temperature = ref(32)
 const humidity = ref(60)
 let sensorTimer = null
 
@@ -56,7 +56,6 @@ let timer = null
 onMounted(() => {
   updateTime()
   timer = setInterval(updateTime, 1000)
-  
   fetchSensorData()
   sensorTimer = setInterval(fetchSensorData, 5000)
 })
@@ -74,7 +73,7 @@ onUnmounted(() => {
     <!-- Header -->
     <header class="header">
       <div class="header-title-area">
-        <div class="header-title">智能药房<span class="highlight">运维管理中心大屏</span></div>
+        <div class="header-title">智能药房<span class="highlight">管理平台</span></div>
         <div class="header-subtitle">Smart Pharmacy O&M Management Center</div>
       </div>
       
@@ -118,9 +117,9 @@ onUnmounted(() => {
       <div class="left-col">
         <div class="top-panels">
           <!-- 三个摄像头面板 -->
-          <CameraFeed title="机器人导航 (POV 1)" :stream-url="camera2Url" :fallback-video="camera2Fallback" />
-          <CameraFeed title="走廊监控" :stream-url="camera1Url" :fallback-video="camera1Fallback" />
-          <CameraFeed title="机器人导航 (POV 2)" :stream-url="camera3Url" :fallback-video="camera3Fallback" />
+          <CameraFeed title="取药车导航 (POV 1)" :stream-url="camera2Url" :fallback-video="camera2Fallback" />
+          <CameraFeed title="送药车导航 (POV 2)" :stream-url="camera3Url" :fallback-video="camera3Fallback" />
+          <CameraFeed title="药房监控" :stream-url="camera1Url" :fallback-video="camera1Fallback" />
         </div>
 
         <!-- 下方医院实时场景图 -->

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { motion } from 'framer-motion';
+import { AnimatePresence, motion } from 'framer-motion';
+import { createPortal } from 'react-dom';
 import * as echarts from 'echarts/core';
 import { BarChart, LineChart, PieChart, RadarChart } from 'echarts/charts';
 import { GridComponent, LegendComponent, RadarComponent, TooltipComponent } from 'echarts/components';
@@ -10,7 +11,7 @@ echarts.use([BarChart, LineChart, PieChart, RadarChart, GridComponent, LegendCom
 import ModuleIcon, { type ModuleIconName } from '../components/ModuleIcon';
 import { showToast } from '../components/Toast';
 import { auditChainApi, medicineApi, patientApi, prescriptionApi } from '../services/api';
-import type { AuditChainRecord, AuditChainVerifyResult } from '../services/api';
+import type { AuditBranchRecord, AuditChainChange, AuditChainRecord, AuditChainVerifyResult } from '../services/api';
 import type { Medicine, Prescription } from '../types';
 import { STATUS_LABELS } from '../types';
 import { formatDateTime } from '../utils/date';
@@ -45,8 +46,11 @@ export default function BasicModulePage({ kind, title, icon }: Props) {
   const [downIds, setDownIds] = useState<Set<number>>(new Set());
   const [auditRecords, setAuditRecords] = useState<AuditChainRecord[]>([]);
   const [auditVerify, setAuditVerify] = useState<AuditChainVerifyResult | null>(null);
+  const [auditChanges, setAuditChanges] = useState<AuditChainChange[]>([]);
   const [auditError, setAuditError] = useState('');
   const [auditChecking, setAuditChecking] = useState(false);
+  const [auditRevision, setAuditRevision] = useState(0);
+  const [auditAction, setAuditAction] = useState('');
 
   const load = async () => {
     setLoading(true);
@@ -83,13 +87,15 @@ export default function BasicModulePage({ kind, title, icon }: Props) {
     const loadAuditChain = async () => {
       setAuditChecking(true);
       try {
-        const [recordRes, verifyRes] = await Promise.all([
-          auditChainApi.list({ page: 1, pageSize: 24 }),
+        const [recordRes, verifyRes, inspectRes] = await Promise.all([
+          auditChainApi.list({ page: 1, pageSize: 60 }),
           auditChainApi.verify(),
+          auditChainApi.inspect(),
         ]);
         if (cancelled) return;
         setAuditRecords(recordRes.list);
         setAuditVerify(verifyRes);
+        setAuditChanges(inspectRes.changes);
         setAuditError('');
       } catch (err: any) {
         if (cancelled) return;
@@ -105,7 +111,20 @@ export default function BasicModulePage({ kind, title, icon }: Props) {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [kind]);
+  }, [kind, auditRevision]);
+
+  const runAuditAction = async (name: string, action: () => Promise<unknown>, success: string) => {
+    setAuditAction(name);
+    try {
+      await action();
+      showToast(success, 'success');
+      setAuditRevision((value) => value + 1);
+    } catch (err: any) {
+      showToast(err.response?.data?.error || '操作失败', 'error');
+    } finally {
+      setAuditAction('');
+    }
+  };
 
   const filteredMedicines = useMemo(() => {
     const key = keyword.trim().toLowerCase();
@@ -250,8 +269,11 @@ export default function BasicModulePage({ kind, title, icon }: Props) {
         <AuditChainDashboard
           records={auditRecords}
           verify={auditVerify}
+          changes={auditChanges}
           error={auditError}
           checking={auditChecking}
+          action={auditAction}
+          onAccept={(id) => runAuditAction(`accept-${id}`, () => auditChainApi.accept(id), '新数据链已设为活动链')}
         />
       );
     }
@@ -313,7 +335,28 @@ export default function BasicModulePage({ kind, title, icon }: Props) {
           <span className="page-title-icon"><ModuleIcon name={icon} size={46} /></span>
           <div><h1>{title}</h1><p>{kind === 'operationLog' ? '每 10 秒自动校验链路完整性' : '基础功能已开放'}</p></div>
         </div>
-        <button className="glass-btn glass-btn--outline" onClick={load}>刷新</button>
+        <div className="page-header-actions">
+          {kind === 'operationLog' && <>
+            <motion.button
+              className={`glass-btn glass-btn--outline glass-btn--sm audit-demo-tamper-btn ${auditAction === 'tamper' ? 'audit-demo-tamper-btn--active' : ''}`}
+              disabled={Boolean(auditAction)}
+              whileTap={{ scale: .9 }}
+              animate={auditAction === 'tamper' ? { scale: [1, .94, 1.04, 1] } : { scale: 1 }}
+              transition={{ duration: .55 }}
+              onClick={() => runAuditAction('tamper', auditChainApi.demoTamper, '演示数据已修改，正在生成异常分支')}
+            >
+              {auditAction === 'tamper' ? '修改中…' : '制造数量篡改'}
+            </motion.button>
+            <button className="glass-btn glass-btn--danger glass-btn--sm" disabled={Boolean(auditAction)} onClick={() => {
+              if (window.confirm('仅清空测试区块链和 AI 分析记录，不删除处方业务数据。确定继续吗？')) {
+                void runAuditAction('clear', auditChainApi.clear, '测试区块链已清空');
+              }
+            }}>
+              {auditAction === 'clear' ? '清空中…' : '清空测试链'}
+            </button>
+          </>}
+          <button className="glass-btn glass-btn--outline" onClick={kind === 'operationLog' ? () => setAuditRevision((value) => value + 1) : load}>刷新</button>
+        </div>
       </motion.div>
 
       {showSearch && (
@@ -339,30 +382,12 @@ function Stat({ label, value }: { label: string; value: number }) {
 }
 
 const AUDIT_EVENT_LABELS: Record<string, string> = {
-  DRUG_INBOUND: '药品入库',
-  PRESCRIPTION_CREATED: '开具处方',
-  DRUG_OUTBOUND: '药品出库',
-  NURSE_RECEIVED: '护士接收',
+  PHARMACIST_SCAN_CONFIRMED: '调剂药师确认',
+  NURSE_SCAN_CONFIRMED: '护士确认',
+  PRESCRIPTION_COMPLETED: '处方结束',
+  DATA_CHANGED: '数据更改',
+  DATA_DELETED: '删除更改',
 };
-
-const AUDIT_STATUS_LABELS: Record<string, string> = {
-  inbound: '已入库',
-  inbound_batch: '批量入库',
-  prescription_created: '已开方',
-  scanned_outbound: '已出库',
-  scanned_confirm: '已接收',
-};
-
-const AUDIT_ENTITY_LABELS: Record<string, string> = {
-  prescription: '处方凭证',
-  trace_code: '药品追溯凭证',
-};
-
-function auditEntityText(record: AuditChainRecord) {
-  const label = AUDIT_ENTITY_LABELS[record.entity_type] || '业务凭证';
-  const idText = String(record.entity_id).startsWith('batch:') ? '批量生成记录' : `编号 ${record.entity_id}`;
-  return { label, idText };
-}
 
 function shortHash(value?: string | null) {
   if (!value) return '-';
@@ -372,38 +397,116 @@ function shortHash(value?: string | null) {
 function AuditChainDashboard({
   records,
   verify,
+  changes,
   error,
   checking,
+  action,
+  onAccept,
 }: {
   records: AuditChainRecord[];
   verify: AuditChainVerifyResult | null;
+  changes: AuditChainChange[];
   error: string;
   checking: boolean;
+  action: string;
+  onAccept: (id: number) => void;
 }) {
-  const chronological = [...records].reverse();
-  const visibleNodes = chronological.slice(-12);
-  const isBroken = Boolean(verify && !verify.valid);
+  const [acceptConfirmOpen, setAcceptConfirmOpen] = useState(false);
+  const [differenceFocused, setDifferenceFocused] = useState(false);
+  const differenceRef = useRef<HTMLDivElement | null>(null);
+  const supportedEvents = new Set(Object.keys(AUDIT_EVENT_LABELS));
+  const chronological = [...records].reverse().filter((record) => supportedEvents.has(record.event_type));
+  const pendingChanges = changes
+    .filter((change) => change.status === 'pending')
+    .sort((a, b) => new Date(a.detected_at).getTime() - new Date(b.detected_at).getTime() || a.id - b.id);
+  const pendingChange = pendingChanges[0];
+  const latestAccepted = changes.find((change) => change.status === 'accepted');
+  const focusPrescriptionId = String(pendingChange?.prescription_id || latestAccepted?.prescription_id || chronological[chronological.length - 1]?.entity_id || '');
+  const prescriptionRecords = chronological.filter((record) => String(record.entity_id) === focusPrescriptionId);
+  const acceptedMarker = latestAccepted
+    ? prescriptionRecords.findIndex((record) => Number(record.change_id) === latestAccepted.id && record.event_type === 'DATA_CHANGED')
+    : -1;
+  const firstScan = prescriptionRecords.find((record) => record.event_type === 'PHARMACIST_SCAN_CONFIRMED');
+  const secondScan = prescriptionRecords.find((record) => record.event_type === 'NURSE_SCAN_CONFIRMED');
+  const activeTail = acceptedMarker >= 0
+    ? prescriptionRecords.slice(acceptedMarker)
+    : prescriptionRecords.slice(-3);
+  const pendingBaselineId = Number(pendingChange?.baseline_record_id || 0);
+  const pendingBaseline = pendingChange
+    ? prescriptionRecords.filter((record) => !pendingBaselineId || record.id <= pendingBaselineId).slice(-3)
+    : [];
+  const pendingContinuation = pendingChange?.base_continuation_records || [];
+  const visibleNodes = pendingChange
+    ? [...pendingBaseline, ...pendingContinuation]
+    : acceptedMarker >= 0
+      ? [firstScan, secondScan, ...activeTail].filter((record): record is AuditChainRecord => Boolean(record))
+      : activeTail;
+  const fallbackBranchRecords: AuditBranchRecord[] = pendingChange ? [
+    {
+      kind: 'change', source_record_id: null, event_type: pendingChange.change_type === 'deleted' ? 'DATA_DELETED' : 'DATA_CHANGED', entity_id: String(pendingChange.prescription_id),
+      event_time: pendingChange.detected_at, payload_hash: pendingChange.new_snapshot_hash,
+      previous_hash: pendingChange.old_snapshot_hash, current_hash: pendingChange.new_snapshot_hash,
+    },
+    {
+      kind: 'completion', source_record_id: null, event_type: 'PRESCRIPTION_COMPLETED', entity_id: String(pendingChange.prescription_id),
+      event_time: pendingChange.detected_at, payload_hash: pendingChange.new_snapshot_hash,
+      previous_hash: pendingChange.new_snapshot_hash, current_hash: pendingChange.new_snapshot_hash,
+    },
+  ] : [];
+  const candidateBranchRecords = pendingChange?.branch_records?.length ? pendingChange.branch_records : fallbackBranchRecords;
+  const isChainBroken = Boolean(verify && !verify.valid);
+  const hasDataChange = Boolean(pendingChange);
   const latest = chronological[chronological.length - 1];
+
+  const locateDifference = () => {
+    differenceRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setDifferenceFocused(true);
+    window.setTimeout(() => setDifferenceFocused(false), 1600);
+  };
+
+  useEffect(() => {
+    if (!pendingChange) return undefined;
+    const handleShortcut = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.matches('input, textarea, select, [contenteditable="true"]')) return;
+      if (event.key.toLowerCase() === 'd') {
+        event.preventDefault();
+        locateDifference();
+      }
+      if (event.key === 'Escape') setAcceptConfirmOpen(false);
+    };
+    window.addEventListener('keydown', handleShortcut);
+    return () => window.removeEventListener('keydown', handleShortcut);
+  }, [pendingChange]);
+
+  const renderAnalysis = (change: AuditChainChange) => (
+    <aside className="audit-node-analysis">
+      <div className="audit-node-analysis-head">
+        <strong>AI 分析</strong>
+        <span>{change.ai_status === 'completed' ? 'DeepSeek' : change.ai_status === 'rules_fallback' ? '本地规则' : change.ai_status === 'running' ? '分析中' : '待分析'}</span>
+      </div>
+      <div className="audit-node-actor">{change.actor_name || '未知操作人'} · {change.actor_source}</div>
+      <pre>{change.ai_analysis || '正在分析字段差异与修改意图…'}</pre>
+    </aside>
+  );
 
   return (
     <div className="audit-chain-shell">
-      <div className={`audit-chain-status ${isBroken ? 'audit-chain-status--broken' : ''}`}>
+      <div className={`audit-chain-status ${isChainBroken || hasDataChange ? 'audit-chain-status--broken' : ''}`}>
         <div className="audit-chain-status-copy">
-          <span className="audit-chain-kicker">TRUSTED AUDIT LEDGER</span>
-          <h3>{isBroken ? '链路完整性异常' : '链路完整性正常'}</h3>
-          <p>{error || (isBroken ? `存证 #${verify?.broken_at} 的前序指纹不匹配` : '最近存证均已完成前后哈希校验')}</p>
+          <span className="audit-chain-kicker">区块链完整性</span>
+          <h3>{isChainBroken ? '区块哈希已损坏' : hasDataChange ? '检测到处方数据与链上快照不一致' : '活动链与处方数据库一致'}</h3>
+          {hasDataChange && <button className="audit-locate-difference" type="button" onClick={locateDifference} title="快捷键 D">
+            快速定位差异 <kbd>D</kbd>
+          </button>}
+          {error && <p>{error}</p>}
         </div>
-        <div className="audit-chain-proof-grid">
+        <div className={`audit-chain-proof-grid ${hasDataChange ? '' : 'audit-chain-proof-grid--compact'}`}>
           <div className="audit-chain-proof">
-            <span>{checking ? '校验中' : '自动校验'}</span>
-            <strong>{verify?.total ?? records.length}</strong>
-            <small>存证记录</small>
+            <span>{checking ? '校验中' : '链上节点'}</span>
+            <strong>{visibleNodes.length}</strong>
           </div>
-          <div className="audit-chain-proof">
-            <span>最新存证</span>
-            <strong>{latest ? `#${latest.id}` : '-'}</strong>
-            <small>{latest ? formatDateTime(latest.event_time) : '暂无记录'}</small>
-          </div>
+          {hasDataChange && <div className="audit-chain-proof"><span>是否需要同步</span><strong>是</strong></div>}
           <div className="audit-chain-proof audit-chain-proof--hash">
             <span>链尾指纹</span>
             <code>{shortHash(verify?.last_hash || latest?.current_hash)}</code>
@@ -411,72 +514,87 @@ function AuditChainDashboard({
         </div>
       </div>
 
-      <div className="audit-chain-panel">
-        <div className="audit-chain-panel-head">
-          <div>
-            <span>最近链路</span>
-            <h4>存证节点流</h4>
-          </div>
-          <div className="audit-chain-panel-meta">
-            <small>按时间从左到右串联</small>
-            <span className="audit-chain-scroll-hint">横向滑动查看 <b aria-hidden="true">→</b></span>
-          </div>
-        </div>
-        <div className="audit-chain-visual" aria-label="可信审计存证节点，可横向滚动查看" tabIndex={0}>
-          {visibleNodes.length === 0 ? (
-            <div className="audit-chain-empty">暂无可信存证记录</div>
-          ) : visibleNodes.map((record, index) => {
-            const broken = verify?.broken_at === record.id;
-            return (
-              <div className={`audit-chain-node ${broken ? 'audit-chain-node--broken' : ''}`} key={record.id}>
-                <div className="audit-chain-node-index">#{record.id}</div>
-                <div className="audit-chain-node-title">{AUDIT_EVENT_LABELS[record.event_type] || record.event_type}</div>
-                <div className="audit-chain-node-time">{formatDateTime(record.event_time)}</div>
-                <div className="audit-chain-node-hash"><span>HASH</span>{shortHash(record.current_hash)}</div>
-                {index < visibleNodes.length - 1 && <span className="audit-chain-link" />}
+      <div className={`audit-branch-grid ${hasDataChange ? 'audit-branch-grid--diff' : 'audit-branch-grid--single'}`}>
+        <section className="audit-chain-panel audit-chain-panel--active">
+          {hasDataChange && <div className="audit-chain-panel-head"><h4>当前基线</h4></div>}
+          <div className="audit-chain-visual audit-chain-visual--vertical" aria-label="已确认活动链" tabIndex={0}>
+            {visibleNodes.length === 0 ? <div className="audit-chain-empty">暂无存证</div> : visibleNodes.map((record, index) => (
+              <div className={`audit-chain-node-row ${record.event_type === 'DATA_CHANGED' && latestAccepted && Number(record.change_id) === latestAccepted.id ? 'audit-chain-node-row--analysis' : ''}`} key={record.id}>
+                <div className={`audit-chain-node ${record.event_type === 'DATA_CHANGED' ? 'audit-chain-node--changed' : record.event_type === 'DATA_DELETED' ? 'audit-chain-node--deleted' : ''} ${hasDataChange && record.id === pendingBaselineId ? 'audit-chain-node--baseline-alert' : ''} ${differenceFocused && record.id === pendingBaselineId ? 'audit-chain-node--difference-focus' : ''}`}>
+                  <div className="audit-chain-node-index">节点 {index + 1}</div>
+                  {hasDataChange && record.id === pendingBaselineId && <div className="audit-chain-node-alert">原记录已与数据库数据偏离</div>}
+                  <div className="audit-chain-node-title">{AUDIT_EVENT_LABELS[record.event_type]}</div>
+                  <div className="audit-chain-node-time">{formatDateTime(record.event_time)}</div>
+                  <div className="audit-chain-node-hash"><span>HASH</span>{shortHash(record.current_hash)}</div>
+                  {index < visibleNodes.length - 1 && <span className="audit-chain-link" />}
+                </div>
+                {record.event_type === 'DATA_CHANGED' && latestAccepted && Number(record.change_id) === latestAccepted.id && renderAnalysis(latestAccepted)}
               </div>
-            );
-          })}
-        </div>
+            ))}
+            {hasDataChange && visibleNodes.length > 0 && <div className="audit-chain-node-row audit-chain-node-row--spacer" aria-hidden="true" />}
+          </div>
+        </section>
+
+        {hasDataChange && <div className="audit-branch-switch-slot" aria-hidden="true" />}
+
+        {pendingChange && <motion.section
+          key={pendingChange.id}
+          className="audit-chain-panel audit-chain-panel--candidate"
+          initial={{ opacity: 0, x: 34, scale: .96 }}
+          animate={{ opacity: 1, x: 0, scale: 1 }}
+          transition={{ type: 'spring', stiffness: 210, damping: 17, mass: .85 }}
+        >
+          <div className="audit-chain-panel-head">
+            <h4>差异分支</h4>
+            <small>{formatDateTime(pendingChange.detected_at)}</small>
+          </div>
+          <div className="audit-chain-visual audit-chain-visual--vertical audit-chain-visual--candidate">
+            {candidateBranchRecords.map((record, index) => {
+              const isChangeNode = record.kind === 'change';
+              const isCompletionNode = record.kind === 'completion';
+              const isLatestNode = index === candidateBranchRecords.length - 1;
+              return <div ref={isChangeNode ? differenceRef : undefined} className={`audit-chain-node-row ${isChangeNode ? 'audit-chain-node-row--analysis' : ''}`} key={`${record.kind}-${record.source_record_id ?? index}`}>
+                {isChangeNode && <motion.span className="audit-change-bridge" aria-hidden="true" initial={{ opacity: 0, scale: .82 }} animate={{ opacity: 1, scale: 1 }} transition={{ type: 'spring', stiffness: 280, damping: 20 }}>→</motion.span>}
+                <div className={`audit-chain-node ${isChangeNode ? (record.event_type === 'DATA_DELETED' ? 'audit-chain-node--deleted' : 'audit-chain-node--changed') : isCompletionNode ? 'audit-chain-node--candidate' : ''} ${differenceFocused && isChangeNode ? 'audit-chain-node--difference-focus' : ''}`}>
+                  <div className="audit-chain-node-index">节点 {index + 3}{isLatestNode ? ' · 最新' : ''}</div>
+                  <div className="audit-chain-node-title">{isChangeNode ? (record.event_type === 'DATA_DELETED' ? '删除更改' : '数据更改') : isCompletionNode ? '处方结束 · 新链' : AUDIT_EVENT_LABELS[record.event_type]}</div>
+                  <div className="audit-chain-node-time">{formatDateTime(record.event_time)}</div>
+                  <div className="audit-chain-node-hash"><span>{isChangeNode ? 'NEW' : 'HASH'}</span>{shortHash(record.current_hash)}</div>
+                  {index < candidateBranchRecords.length - 1 && <span className="audit-chain-link" />}
+                </div>
+                {isChangeNode && renderAnalysis(pendingChange)}
+              </div>;
+            })}
+          </div>
+          <div className="audit-sync-action">
+            <button className="glass-btn audit-accept-btn" disabled={Boolean(action)} onClick={() => setAcceptConfirmOpen(true)}>
+              {action === `accept-${pendingChange.id}` ? '更新中…' : '同步差异分支'}
+            </button>
+          </div>
+        </motion.section>}
       </div>
 
-      <div className="audit-record-list">
-        <div className="audit-record-list-head">
-          <div>
-            <span>审计明细</span>
-            <h4>存证记录</h4>
-          </div>
-          <small>{records.length} 条最新记录</small>
-        </div>
-        {records.map((record) => {
-          const entity = auditEntityText(record);
-          return (
-            <article key={record.id} className={`audit-record-card ${verify?.broken_at === record.id ? 'audit-record-card--broken' : ''}`}>
-              <div className="audit-record-mark">#{record.id}</div>
-              <div className="audit-record-main">
-                <span>{formatDateTime(record.event_time)}</span>
-                <strong>{AUDIT_EVENT_LABELS[record.event_type] || record.event_type}</strong>
-                <em>{AUDIT_STATUS_LABELS[record.flow_status] || record.flow_status}</em>
+      {createPortal(<AnimatePresence>
+        {pendingChange && acceptConfirmOpen && (
+          <motion.div className="confirm-overlay audit-confirm-overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setAcceptConfirmOpen(false)}>
+            <motion.div className="confirm-dialog glass-card audit-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="audit-confirm-title" initial={{ opacity: 0, y: 18, scale: .96 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 12, scale: .97 }} transition={{ type: 'spring', stiffness: 300, damping: 24 }} onClick={(event) => event.stopPropagation()}>
+              <div className="audit-confirm-icon">⇄</div>
+              <h3 id="audit-confirm-title">同步差异分支</h3>
+              <p>将右侧分支设为新的活动链，并保留原链用于追责。</p>
+              <div className="audit-confirm-summary">
+                <span>待同步处方</span>
+                <strong>#{pendingChange.prescription_id}</strong>
+                <span>处理结果</span>
+                <strong>生成新链并更新基线</strong>
               </div>
-              <div className="audit-record-subject">
-                <span>业务凭证</span>
-                <strong>{entity.label}</strong>
-                <small>{entity.idText}</small>
+              <div className="confirm-actions">
+                <motion.button className="glass-btn glass-btn--primary" disabled={Boolean(action)} whileTap={{ scale: .97 }} onClick={() => { setAcceptConfirmOpen(false); onAccept(pendingChange.id); }}>确认同步</motion.button>
+                <button className="glass-btn glass-btn--outline" disabled={Boolean(action)} onClick={() => setAcceptConfirmOpen(false)}>取消</button>
               </div>
-              <div className="audit-record-fingerprints">
-                <div>
-                  <span>本次凭证指纹</span>
-                  <code>{shortHash(record.current_hash)}</code>
-                </div>
-                <div>
-                  <span>上一凭证指纹</span>
-                  <code>{shortHash(record.previous_hash)}</code>
-                </div>
-              </div>
-            </article>
-          );
-        })}
-      </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>, document.body)}
     </div>
   );
 }

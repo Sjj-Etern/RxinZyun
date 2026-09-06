@@ -4,8 +4,9 @@ import https from 'https';
 import pool from '../db';
 import { config } from '../config';
 import { authMiddleware, requireRole } from '../middleware/auth';
-import { appendAuditRecord } from '../services/auditChain';
 import { ensureDeliverySchema } from '../services/deliverySchema';
+import { createPrescriptionDeletionChange, ensureAuditChainTable, purgeTestPrescriptionAudit } from '../services/auditChain';
+import { ensureTestSupport } from '../services/testSupport';
 
 const router = Router();
 router.use(authMiddleware);
@@ -235,17 +236,6 @@ router.post('/', requireRole('doctor', 'admin'), async (req: Request, res: Respo
       );
     }
 
-    await appendAuditRecord(conn, {
-      eventType: 'PRESCRIPTION_CREATED',
-      entityType: 'prescription',
-      entityId: prescriptionId,
-      flowStatus: 'prescription_created',
-      traceCodes: resolvedItems.map((item) => item.trace_code),
-      prescriptionId,
-      prescriptionCode,
-      operatorId: req.user!.id,
-    });
-
     await conn.commit();
     res.status(201).json({ id: prescriptionId, prescription_code: prescriptionCode, message: '处方已创建，已进入可发药状态' });
   } catch (err: any) {
@@ -354,6 +344,126 @@ router.get('/:id', async (req: Request, res: Response) => {
     res.json({ ...prescription, items });
   } catch (err: any) {
     res.status(500).json({ error: '服务器错误: ' + err.message });
+  }
+});
+
+// POST /api/prescriptions/:id/reset-test — 仅 test 账号可重置本人未完成配送的测试处方。
+router.post('/:id/reset-test', requireRole('doctor', 'admin'), async (req: Request, res: Response) => {
+  const conn = await pool.getConnection();
+  try {
+    const isAdmin = req.user?.role === 'admin';
+    if (req.user?.username !== 'test' && !isAdmin) {
+      res.status(403).json({ error: '仅管理员或测试账号可以重置测试处方' });
+      return;
+    }
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      res.status(400).json({ error: '处方编号无效' });
+      return;
+    }
+
+    // 所有可能执行 DDL 的兼容初始化都放在事务外，避免隐式提交。
+    await ensurePrescriptionTraceCodesTable(conn);
+    await ensureDeliverySchema(conn);
+    await ensureTestSupport(conn);
+    await ensureAuditChainTable(conn);
+    await conn.beginTransaction();
+
+    const [prescriptions] = await conn.query<any[]>(
+      `SELECT id, doctor_id, prescription_code, settled_at
+       FROM prescriptions WHERE id = ? FOR UPDATE`,
+      [id]
+    );
+    if (!prescriptions.length) {
+      await conn.rollback();
+      res.status(404).json({ error: '处方不存在' });
+      return;
+    }
+    const prescription = prescriptions[0];
+    if (!isAdmin && Number(prescription.doctor_id) !== req.user!.id) {
+      await conn.rollback();
+      res.status(403).json({ error: '测试账号只能重置本人开具的处方' });
+      return;
+    }
+    if (prescription.settled_at) {
+      await conn.rollback();
+      res.status(400).json({ error: '处方已进入正式结算，不能重置' });
+      return;
+    }
+
+    const [completedDeliveries] = await conn.query<any[]>(
+      "SELECT id FROM delivery_records WHERE prescription_id = ? AND status = 'unlocked' FOR UPDATE",
+      [id]
+    );
+    if (completedDeliveries.length) {
+      await conn.rollback();
+      res.status(400).json({ error: '处方配送已完成，不能重置' });
+      return;
+    }
+
+    const [traceRows] = await conn.query<any[]>(
+      `SELECT DISTINCT tc.id
+       FROM medicine_trace_codes tc
+       JOIN prescription_trace_codes ptc ON ptc.trace_code_id = tc.id
+       WHERE ptc.prescription_id = ?
+       FOR UPDATE`,
+      [id]
+    );
+    const traceCodeIds = traceRows.map((row) => Number(row.id));
+    const [robotRows] = await conn.query<any[]>(
+      'SELECT DISTINCT robot_id FROM delivery_records WHERE prescription_id = ? FOR UPDATE',
+      [id]
+    );
+    const robotIds = robotRows.map((row) => Number(row.robot_id)).filter(Boolean);
+
+    await conn.query('DELETE FROM delivery_records WHERE prescription_id = ?', [id]);
+    if (robotIds.length) {
+      await conn.query(
+        `UPDATE robots r
+         SET status = 'available'
+         WHERE r.id IN (${robotIds.map(() => '?').join(', ')})
+           AND r.status = 'busy'
+           AND NOT EXISTS (
+             SELECT 1 FROM delivery_records dr
+             WHERE dr.robot_id = r.id AND dr.status IN ('delivering', 'arrived')
+           )`,
+        robotIds
+      );
+    }
+
+    await conn.query('DELETE FROM prescription_trace_codes WHERE prescription_id = ?', [id]);
+    if (traceCodeIds.length) {
+      await conn.query(
+        `UPDATE medicine_trace_codes
+         SET prescription_id = NULL, status = 'pending',
+             scan1_time = NULL, scan2_time = NULL, scan3_time = NULL,
+             scan1_user_id = NULL, scan2_user_id = NULL, scan3_user_id = NULL
+         WHERE id IN (${traceCodeIds.map(() => '?').join(', ')})`,
+        traceCodeIds
+      );
+    }
+    await conn.query(
+      `UPDATE prescriptions
+       SET status = 'approved', pharmacist_dispense_id = NULL, pharmacist_check_id = NULL, dispensed_at = NULL
+       WHERE id = ?`,
+      [id]
+    );
+    const removedChainRecords = await purgeTestPrescriptionAudit(conn, id);
+    await conn.commit();
+
+    if (prescription.prescription_code) {
+      notifyBackendPrescriptionDeleted([prescription.prescription_code]);
+    }
+    res.json({
+      message: '测试处方已重置，可直接重新发药和扫码',
+      trace_code_count: traceCodeIds.length,
+      removed_chain_records: removedChainRecords,
+    });
+  } catch (err: any) {
+    await conn.rollback();
+    res.status(500).json({ error: '重置测试处方失败: ' + err.message });
+  } finally {
+    conn.release();
   }
 });
 
@@ -471,7 +581,17 @@ router.delete('/all', async (_req: Request, res: Response) => {
   try {
     await ensurePrescriptionTraceCodesTable(conn);
     await ensureDeliverySchema(conn);
+    await ensureAuditChainTable(conn);
     await conn.beginTransaction();
+
+    const [prescriptionIds] = await conn.query<any[]>('SELECT id FROM prescriptions FOR UPDATE');
+    for (const prescription of prescriptionIds) {
+      await createPrescriptionDeletionChange(conn, Number(prescription.id), {
+        id: _req.user!.id,
+        name: _req.user!.real_name,
+        source: 'HIS 批量删除处方（已登录账号）',
+      });
+    }
 
     const [robotRows] = await conn.query<any[]>('SELECT DISTINCT robot_id FROM delivery_records');
     const robotIds = robotRows.map((row) => row.robot_id).filter(Boolean);
@@ -533,7 +653,14 @@ router.delete('/:id', async (req: Request, res: Response) => {
 
     await ensurePrescriptionTraceCodesTable(conn);
     await ensureDeliverySchema(conn);
+    await ensureAuditChainTable(conn);
     await conn.beginTransaction();
+
+    await createPrescriptionDeletionChange(conn, id, {
+      id: req.user!.id,
+      name: req.user!.real_name,
+      source: 'HIS 删除处方（已登录账号）',
+    });
 
     const [traceRows] = await conn.query<any[]>(
       `SELECT DISTINCT tc.id

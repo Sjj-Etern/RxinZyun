@@ -387,6 +387,7 @@ def get_his_sender_status():
 _triggered_pharmacist_success: set = set()
 
 
+# 【通信工程师负责】承接 HIS 的 HTTP 业务事件，并转换为车1、车2可识别的 ROS 信号。
 @router.post("/workflow/pharmacist-success-trigger")
 async def trigger_pharmacist_success(prescription_code: str = Body(..., embed=True)):
     """

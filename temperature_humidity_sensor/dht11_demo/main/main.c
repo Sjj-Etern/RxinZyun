@@ -70,21 +70,24 @@ void app_main(void)
     // 传感器读取 + 数据上报主循环
     while (1)
     {
-        if (dht11_read(&sensor) == ESP_OK)
-        {
-            // 串口输出（保留，便于后端未就绪时通过串口查看数据）
-            // 格式: [SENSOR_DATA]{"temp":30,"humi":70}
-            printf("[SENSOR_DATA]{\"temp\":%d,\"humi\":%d}\n",
-                   sensor.temperature,
-                   sensor.humidity);
-            fflush(stdout);
+        // TODO1:温度传感器读取数据与websocket上报
+        // if (dht11_read(&sensor) == ESP_OK)
+        // {
+        //     // 串口输出（保留，便于后端未就绪时通过串口查看数据）
+        //     // 格式: [SENSOR_DATA]{"temp":30,"humi":70}
+        //     printf("[SENSOR_DATA]{\"temp\":%d,\"humi\":%d}\n",
+        //            sensor.temperature,
+        //            sensor.humidity);
+        //     fflush(stdout);
 
-            // 通过 WebSocket 上报（带 RSSI 信号强度）
-            int rssi = wifi_get_rssi();
-            esp_err_t send_ret = ws_send_sensor_data(sensor.temperature,
-                                                     sensor.humidity,
-                                                     rssi);
+        //     // 通过 WebSocket 上报（带 RSSI 信号强度）
+        //     int rssi = wifi_get_rssi();
+        //     esp_err_t send_ret = ws_send_sensor_data(sensor.temperature,
+        //                                              sensor.humidity,
+        //                                              rssi);
             // 未连接时静默（连接状态由回调统一打印，避免刷屏）
+ 
+        
             if (send_ret != ESP_OK && send_ret != ESP_ERR_INVALID_STATE) {
                 ESP_LOGW(TAG, "WS send failed: %s",
                          esp_err_to_name(send_ret));

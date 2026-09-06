@@ -14,7 +14,7 @@ interface TraceEntry {
   scan2_time: string | null;
   scan3_time: string | null;
   time: string;
-  kind?: 'scan' | 'error';
+  kind?: 'scan' | 'import' | 'error';
   message?: string;
 }
 
@@ -67,7 +67,8 @@ const getTraceCodeCandidates = (value: string) => {
 
 const normalizeTraceCodeInput = (value: string) => {
   const candidates = getTraceCodeCandidates(value);
-  return candidates.find((candidate) => /^\d{20,}$/.test(candidate)) || candidates[0] || value.trim();
+  const numeric = candidates.map((candidate) => candidate.replace(/\D/g, '')).find((candidate) => candidate.length >= 7);
+  return numeric || value.replace(/\D/g, '');
 };
 
 const toEntry = (data: any, fallbackCode: string, action = ''): TraceEntry => ({
@@ -146,6 +147,27 @@ export default function ScanPage() {
       playBeep();
       showToast('扫码成功，请药师在右侧确认录入', 'success');
     } catch (err: any) {
+      const match = err.response?.data;
+      if (match?.can_import && match?.medicine_id) {
+        const entry: TraceEntry = {
+          id: `${code}-${Date.now()}`,
+          trace_code: code,
+          medicine_name: match.medicine_name,
+          status: 'pending',
+          action: '本药品扫码入库',
+          scan1_time: null,
+          scan2_time: null,
+          scan3_time: null,
+          time: formatDateTime(new Date()),
+          kind: 'import',
+          message: '追溯码未入库，已按前 7 位匹配药品类别',
+        };
+        setHistory((current) => [entry, ...current.filter((item) => item.trace_code !== code)]);
+        setSearchResult(entry);
+        playBeep();
+        showToast('已匹配药品类别，请点击确认扫码入库', 'success');
+        return;
+      }
       const message = err.response?.data?.error || err.message || '扫码失败，请重试';
       showToast(message, 'error');
     } finally {
@@ -170,7 +192,7 @@ export default function ScanPage() {
         return;
       }
 
-      if (event.key.length !== 1) return;
+      if (!/^\d$/.test(event.key)) return;
       barcodeBufferRef.current += event.key;
       if (barcodeTimerRef.current) clearTimeout(barcodeTimerRef.current);
       barcodeTimerRef.current = setTimeout(() => {
@@ -206,10 +228,12 @@ export default function ScanPage() {
     if (confirmingCode) return;
     setConfirmingCode(entry.trace_code);
     try {
-      const data = await medicineTraceCodeApi.scanByCode(entry.trace_code);
+      const data = entry.kind === 'import'
+        ? await medicineTraceCodeApi.registerByPrefix(entry.trace_code)
+        : await medicineTraceCodeApi.scanByCode(entry.trace_code);
       setHistory((current) => current.filter((item) => item.trace_code !== entry.trace_code));
       setSearchResult(toEntry(data, entry.trace_code, data.action || '已录入'));
-      showToast(`${data.action || '药品'}已确认并录入数据库`, 'success');
+      showToast(entry.kind === 'import' ? '追溯码已确认入库' : `${data.action || '药品'}已确认并录入数据库`, 'success');
     } catch (err: any) {
       const message = err.response?.data?.error || err.message || '确认录入失败，请重试';
       showToast(message, 'error');
@@ -222,8 +246,8 @@ export default function ScanPage() {
     <div className="outbound-page">
       <div className="page-header outbound-page__header">
         <div>
-          <div className="outbound-eyebrow"><span className="outbound-eyebrow__dot" /> TRACE DESK / 出库工作台</div>
-          <h1>出库追溯</h1>
+          <div className="outbound-eyebrow"><span className="outbound-eyebrow__dot" /> TRACE DESK / 扫码工作台</div>
+          <h1>扫码追溯</h1>
           <p>扫码后先暂存药品信息，药师确认后才会录入数据库。</p>
         </div>
       </div>
@@ -236,7 +260,7 @@ export default function ScanPage() {
             <input
               className="outbound-search__input"
               value={searchCode}
-              onChange={(event) => setSearchCode(event.target.value)}
+              onChange={(event) => setSearchCode(event.target.value.replace(/\D/g, ''))}
               onKeyDown={(event) => event.key === 'Enter' && void handleLookup()}
               placeholder="输入追溯码，仅查询当前状态，不推进流程"
               aria-label="手动查询追溯码"
@@ -311,7 +335,7 @@ export default function ScanPage() {
                     disabled={Boolean(confirmingCode)}
                     onClick={() => void handleConfirm(entry)}
                   >
-                    {confirmingCode === entry.trace_code ? '录入中…' : entry.status === 'scanned_outbound' ? '确认接收' : '确认出库'}
+                    {confirmingCode === entry.trace_code ? '录入中…' : entry.kind === 'import' ? '确认扫码入库' : entry.status === 'scanned_outbound' ? '确认接收' : '确认出库'}
                   </button>
                 </motion.div>
               ))}

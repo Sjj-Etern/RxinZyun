@@ -22,6 +22,7 @@ export default function PrescriptionDetailPage() {
   const [actionLoading, setActionLoading] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [confirmDispenseOpen, setConfirmDispenseOpen] = useState(false);
+  const [confirmResetTest, setConfirmResetTest] = useState(false);
 
   const load = async () => {
     try { const data = await prescriptionApi.getById(Number(id)); setPrescription(data); }
@@ -51,6 +52,22 @@ export default function PrescriptionDetailPage() {
   if (!prescription) return <div className="alert alert--error">处方不存在</div>;
 
   const canDispense = (user?.role === 'pharmacist' || user?.role === 'admin') && prescription.status === 'approved';
+  const isTestOperator = user?.username === 'test' || user?.role === 'admin';
+  const canResetTest = isTestOperator && (user?.role === 'admin' || Number(prescription.doctor_id) === Number(user.id));
+
+  const handleResetTest = async () => {
+    setActionLoading(true);
+    try {
+      const res = await prescriptionApi.resetTest(Number(id));
+      showToast(res.message || '测试处方已重置', 'success');
+      setConfirmResetTest(false);
+      await load();
+    } catch (err: any) {
+      showToast(err.response?.data?.error || '重置失败', 'error');
+    } finally {
+      setActionLoading(false);
+    }
+  };
 
   return (
     <div>
@@ -69,6 +86,18 @@ export default function PrescriptionDetailPage() {
           <motion.button className="glass-btn glass-btn--danger glass-btn--sm" onClick={() => setConfirmDelete(true)} whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.97 }}>删除处方</motion.button>
         </div>
       </motion.div>
+
+      {isTestOperator && (
+        <motion.div className="glass-card test-prescription-reset-card" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
+          <div>
+            <strong>测试处方快速重置</strong>
+            <span>{canResetTest ? '清除未完成配送和扫码状态，保留追溯码以便立即重新测试。' : 'test 账号只能重置本人开具的处方。'}</span>
+          </div>
+          <motion.button className="glass-btn glass-btn--warning" onClick={() => setConfirmResetTest(true)} disabled={!canResetTest || actionLoading} whileTap={{ scale: .97 }}>
+            重置测试处方
+          </motion.button>
+        </motion.div>
+      )}
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
         <motion.div className="glass-card" style={{ padding: 20 }} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}>
@@ -141,6 +170,21 @@ export default function PrescriptionDetailPage() {
               <div className="confirm-actions">
                 <motion.button className="glass-btn glass-btn--primary" onClick={confirmDispense} whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.97 }}>确认发药</motion.button>
                 <button className="glass-btn glass-btn--outline" onClick={() => setConfirmDispenseOpen(false)}>取消</button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {confirmResetTest && (
+          <motion.div className="confirm-overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+            <motion.div className="confirm-dialog glass-card" initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.9, y: 20 }}>
+              <h3>重置测试处方</h3>
+              <p>将删除未完成配送记录，解绑并恢复追溯码，清空该处方的测试区块链记录。处方会恢复为可重新发药状态。</p>
+              <div className="confirm-actions">
+                <motion.button className="glass-btn glass-btn--warning" disabled={actionLoading} onClick={handleResetTest} whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.97 }}>{actionLoading ? '重置中…' : '确认重置'}</motion.button>
+                <button className="glass-btn glass-btn--outline" disabled={actionLoading} onClick={() => setConfirmResetTest(false)}>取消</button>
               </div>
             </motion.div>
           </motion.div>
