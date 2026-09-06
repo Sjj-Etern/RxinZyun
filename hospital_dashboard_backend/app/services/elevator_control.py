@@ -113,9 +113,7 @@ class ElevatorController:
         )
 
         addrs = ", ".join(str(sock.getsockname()) for sock in self._server.sockets)
-        print(f"[{_ts()}] {tag} TCP 服务端已启动，监听: {addrs}")
-        print(f"[{_ts()}] {tag} 等待 ESP32 连接...")
-        logger.info(f"电梯 TCP 服务端启动，监听 {addrs}")
+        print(f"{tag} TCP服务端已启动，监听: {addrs}")
 
     async def stop_server(self) -> None:
         """停止 TCP 服务端"""
@@ -138,7 +136,7 @@ class ElevatorController:
             self._server = None
 
         self.elevator_state["connected"] = False
-        print(f"[{_ts()}] {tag} TCP 服务端已停止")
+        print(f"{tag} TCP服务端已停止")
 
     # ===== 客户端连接处理 =====
 
@@ -147,10 +145,7 @@ class ElevatorController:
         tag = self._log_tag()
         peer = writer.get_extra_info("peername")
         peer_str = f"{peer[0]}:{peer[1]}"
-        print(f"[{_ts()}] {tag} {'='*56}")
-        print(f"[{_ts()}] {tag} ESP32 已连接: {peer_str}")
-        print(f"[{_ts()}] {tag} {'='*56}")
-        logger.info(f"ESP32 电梯控制器已连接: {peer}")
+        print(f"{tag} ESP32已连接: {peer_str}")
 
         # 同一时间只允许一个 ESP32 连接
         async with self._client_lock:
@@ -180,21 +175,16 @@ class ElevatorController:
                 if not line_str:
                     continue
 
-                print(f"[{_ts()}] {tag} RECV ← {peer_str}: {line_str}")
-                logger.info(f"ESP32 消息: {line_str}")
-
                 try:
                     msg = json.loads(line_str)
                     await self._handle_esp32_message(msg, peer_str)
-                except json.JSONDecodeError as e:
-                    print(f"[{_ts()}] {tag} [警告] JSON 解析失败: {e}, 原始: {line_str}")
-                    logger.warning(f"JSON 解析失败: {e}, 原始: {line_str}")
+                except json.JSONDecodeError:
+                    pass
 
         except asyncio.CancelledError:
             pass
-        except Exception as e:
-            print(f"[{_ts()}] {tag} [错误] 连接异常: {e}")
-            logger.error(f"ESP32 连接异常: {e}", exc_info=True)
+        except Exception:
+            pass
         finally:
             async with self._client_lock:
                 if self._writer is writer:
@@ -209,8 +199,7 @@ class ElevatorController:
             except Exception:
                 pass
 
-            print(f"[{_ts()}] {tag} ESP32 已断开: {peer_str}")
-            logger.info(f"ESP32 电梯控制器已断开: {peer}")
+            print(f"{tag} ESP32已断开: {peer_str}")
 
     async def _handle_esp32_message(self, msg: dict, peer_str: str) -> None:
         """处理 ESP32 上报的消息（ACK / 状态）"""
@@ -231,29 +220,21 @@ class ElevatorController:
             if "humi" in msg:
                 extra += f", humi={msg['humi']}%"
 
-            print(f"[{_ts()}] {tag} ACK  #{seq}: cmd={cmd}, status={status}{extra}")
-
             async with self._ack_lock:
                 if self._pending_ack and not self._pending_ack.done():
                     self._pending_ack.set_result(msg)
-                else:
-                    print(f"[{_ts()}] {tag} [警告] 收到未匹配的 ACK #{seq}: {msg}")
 
         elif msg_type == "status":
-            # 电梯状态上报
             self.elevator_state["last_status"] = msg
-            print(f"[{_ts()}] {tag} STATUS #{seq}: floor={msg.get('floor')}, temp={msg.get('temp')}°C, humi={msg.get('humi')}%")
 
         elif msg_type == "floor_arrived":
-            # ESP32 楼层移动完成上报（toFloor 执行完毕的真实时序反馈）
             floor = msg.get("floor")
             self.elevator_state["last_floor_arrived"] = msg
-            print(f"[{_ts()}] {tag} FLOOR_ARRIVED: floor={floor}")
-            logger.info(f"ESP32 上报楼层到达: {msg}")
+            print(f"{tag} [收到] FLOOR_ARRIVED | floor={floor}")
             self._floor_arrived_event.set()
 
         else:
-            print(f"[{_ts()}] {tag} [警告] 未知消息类型: {msg}")
+            pass
 
     # ===== 命令发送 =====
 
@@ -267,7 +248,6 @@ class ElevatorController:
         tag = self._log_tag()
 
         if self._writer is None:
-            print(f"[{_ts()}] {tag} [错误] ESP32 未连接，无法发送命令: {cmd}")
             raise RuntimeError("ESP32 未连接，无法发送命令")
 
         # 分配序列号
@@ -284,20 +264,18 @@ class ElevatorController:
             self._pending_ack = asyncio.get_event_loop().create_future()
 
         t0 = time.time()
-        print(f"[{_ts()}] {tag} SEND #{seq} → {peer_str}: {cmd_str}")
-        logger.info(f"发送电梯命令 #{seq}: {cmd_str}")
+        print(f"{tag} [发送] {cmd.get('cmd')} | 序列号={seq}")
         self._writer.write(cmd_json.encode("utf-8"))
         await self._writer.drain()
 
         try:
             ack = await asyncio.wait_for(self._pending_ack, timeout=self.cmd_timeout)
             duration_ms = int((time.time() - t0) * 1000)
-            print(f"[{_ts()}] {tag} DONE #{seq}: cmd={cmd.get('cmd')}, duration={duration_ms}ms")
+            print(f"{tag} [收到] ACK | 序列号={seq} | 耗时={duration_ms}ms")
             return ack
         except asyncio.TimeoutError:
             duration_ms = int((time.time() - t0) * 1000)
-            print(f"[{_ts()}] {tag} TIMEOUT #{seq}: cmd={cmd.get('cmd')}, {duration_ms}ms 无 ACK")
-            logger.error(f"电梯命令超时 #{seq}: {cmd_str}")
+            print(f"{tag} [超时] {cmd.get('cmd')} | 序列号={seq} | {duration_ms}ms无ACK")
             raise
         finally:
             async with self._ack_lock:
@@ -440,7 +418,6 @@ async def _udp_discovery_responder() -> None:
                 return
 
             if msg.get("type") == "discovery":
-                node_id = msg.get("id", "unknown")
                 local_ip = _get_local_ip_for(addr[0])
                 tcp_port = settings.elevator_tcp_port
 
@@ -451,9 +428,7 @@ async def _udp_discovery_responder() -> None:
                 })
 
                 self.transport.sendto(response.encode(), addr)
-                print(f"[{_ts()}] {tag} RECV 发现请求 from {addr[0]}:{addr[1]} (node={node_id})")
-                print(f"[{_ts()}] {tag} SEND 发现响应 → {addr[0]}:{addr[1]}: {{\"ip\":\"{local_ip}\",\"port\":{tcp_port}}}")
-                logger.info(f"响应电梯发现: node={node_id}, addr={addr}, ip={local_ip}:{tcp_port}")
+                print(f"{tag} [收到] discovery | from={addr[0]}:{addr[1]}")
 
     loop = asyncio.get_event_loop()
 
@@ -463,13 +438,11 @@ async def _udp_discovery_responder() -> None:
         allow_broadcast=True,
     )
 
-    print(f"[{_ts()}] {tag} 监听发现广播: 端口 {udp_port}")
-    logger.info(f"电梯 UDP 发现响应启动，端口 {udp_port}")
+    print(f"{tag} UDP发现响应已启动，端口={udp_port}")
 
     try:
-        # 永久等待，直到被取消
         await asyncio.Event().wait()
     except asyncio.CancelledError:
-        print(f"[{_ts()}] {tag} 发现响应服务已停止")
+        pass
     finally:
         transport.close()

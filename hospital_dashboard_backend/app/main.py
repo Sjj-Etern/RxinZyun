@@ -35,37 +35,27 @@ _background_tasks: list = []
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("=" * 60)
-    print("Hospital New Demo Back 服务启动（双车模式）")
-    print("=" * 60)
+    print("=" * 40)
+    print("Hospital Dashboard Backend 启动")
+    print("=" * 40)
 
     # ===== 创建数据库表 =====
     try:
         models.Base.metadata.create_all(bind=engine)
-        print("[成功] 数据库表创建完成")
-        logger.info("数据库表创建完成")
     except Exception as e:
         print(f"[警告] 数据库表创建失败: {e}")
-        logger.warning(f"数据库表创建失败: {e}")
 
-    # ===== 启动电梯 TCP 服务端（与 elevator_access_control ESP32 通信）=====
-    # 注意：必须在小车服务之前启动，因为 ros_listener 中的 check_port_reachable()
-    # 是同步阻塞函数，会阻塞事件循环，导致 lifespan 的 yield 无法执行
+    # ===== 启动电梯 TCP 服务端 =====
     try:
         await start_elevator_server()
-        print(f"[成功] 电梯 TCP 服务端已启动 (端口 {settings.elevator_tcp_port})")
     except Exception as e:
-        print(f"[警告] 电梯 TCP 服务端启动失败: {e}")
-        logger.warning(f"电梯 TCP 服务端启动失败: {e}")
+        print(f"[警告] 电梯TCP服务端启动失败: {e}")
 
     # ===== 启动所有小车服务 =====
     car_configs = settings.get_car_configs()
 
     for cfg in car_configs:
         car_id = cfg["car_id"]
-        print(f"\n{'='*60}")
-        print(f"[启动] 小车 {car_id} 服务")
-        print(f"{'='*60}")
 
         # 创建 HIS Sender 实例
         sender = create_sender(
@@ -78,10 +68,9 @@ async def lifespan(app: FastAPI):
         if car_id == 1:
             sender_task = asyncio.create_task(sender.start())
             _background_tasks.append(sender_task)
-            print(f"[成功] 小车{car_id} HIS Sender 已启动")
         else:
             # 车2 只被动发送跨梯流程信号，不主动读取处方或发送 start。
-            print(f"[成功] 小车{car_id} 信号 Sender 已注册")
+            pass
 
         # 创建 ROS Listener 实例
         listener = create_listener(
@@ -95,17 +84,15 @@ async def lifespan(app: FastAPI):
         )
         listener_task = asyncio.create_task(listener.start())
         _background_tasks.append(listener_task)
-        print(f"[成功] 小车{car_id} ROS Listener 已启动")
 
-    print(f"\n{'='*60}")
-    print(f"服务启动完成，共 {len(car_configs)} 辆小车")
-    print(f"后台任务数: {len(_background_tasks)}")
-    print(f"{'='*60}")
+        print(f"[启动] 小车{car_id} Sender+Listener 已启动")
+
+    print(f"[启动] 服务启动完成，共{len(car_configs)}辆小车")
 
     yield
 
     # 关闭时：取消所有后台任务
-    print("\n[停止] 正在关闭所有服务...")
+    print("[停止] 正在关闭所有服务...")
 
     # 停止电梯 TCP 服务端
     try:
@@ -130,9 +117,7 @@ async def lifespan(app: FastAPI):
             print(f"[警告] HIS Sender 停止失败: {e}")
 
     _background_tasks.clear()
-    print("=" * 60)
-    print("服务已关闭")
-    print("=" * 60)
+    print("[停止] 服务已关闭")
 
 
 app = FastAPI(

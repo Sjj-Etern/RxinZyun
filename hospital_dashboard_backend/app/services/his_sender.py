@@ -70,6 +70,28 @@ def get_latest_pending_prescription():
             conn.close()
 
 
+def check_prescription_exists(prescription_code: str) -> bool:
+    """检查指定处方是否仍在 HIS 数据库中（任意状态）。
+
+    用于发送循环中定期检查药单是否被删除，防止药单删除后持续发送信号。
+    查询失败时保守返回 True，避免网络抖动误停发送。
+    """
+    try:
+        conn = pymysql.connect(**HIS_DB_CONFIG, connect_timeout=5)
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT 1 FROM prescriptions WHERE prescription_code = %s LIMIT 1",
+                (prescription_code,)
+            )
+            return cursor.fetchone() is not None
+    except Exception as e:
+        print(f"[HIS Sender] [WARN] 检查处方存在性失败: {e}，默认继续发送")
+        return True
+    finally:
+        if 'conn' in locals():
+            conn.close()
+
+
 def purge_stale_events_if_reordered(prescription_code: str, created_at) -> int:
     """删除重下自愈：处方码复用时自动清理上一轮的旧节点事件。
 
@@ -104,18 +126,8 @@ def get_prescription_medicine_locations(prescription_code: str) -> list:
 
     查询路径：prescriptions -> prescription_items -> medicine_locations
     """
-    print("=" * 60)
-    print(f"[HIS Sender] 开始查询药品坐标")
-    print(f"[HIS Sender] 处方编码: {prescription_code}")
-
     try:
-        print(f"[HIS Sender] 正在连接 HIS MySQL...")
-        print(f"[HIS Sender] MySQL地址: {settings.his_mysql_host}:{settings.his_mysql_port}")
-        print(f"[HIS Sender] MySQL数据库: {settings.his_mysql_db}")
-
         conn = pymysql.connect(**HIS_DB_CONFIG, connect_timeout=5)
-        print(f"[HIS Sender] MySQL连接成功")
-
         with conn.cursor() as cursor:
             sql_query = """
                 SELECT
@@ -132,22 +144,14 @@ def get_prescription_medicine_locations(prescription_code: str) -> list:
                 GROUP BY ml.medicine_id
                 ORDER BY ml.medicine_id ASC
             """
-            print(f"[HIS Sender] 执行SQL查询: {sql_query.strip()}")
-            print(f"[HIS Sender] 查询参数: prescription_code={prescription_code}")
-
             cursor.execute(sql_query, (prescription_code,))
             results = cursor.fetchall()
 
-            print(f"[HIS Sender] 查询结果数量: {len(results)}")
-
             if results:
                 medicine_list = []
-                for i, row in enumerate(results):
-                    print(f"[HIS Sender] 查询结果{i+1}: medicine_id={row['medicine_id']}, x={row['x']}, y={row['y']}, z={row['z']}, yaw={row['yaw']}")
-
+                for row in results:
                     medicine_id_value = row["medicine_id"]
                     if medicine_id_value is None or medicine_id_value == 0:
-                        print(f"[HIS Sender] WARNING: 药品{i+1} 的 medicine_id 为 NULL 或 0，跳过该药品")
                         continue
 
                     medicine_list.append({
@@ -157,27 +161,15 @@ def get_prescription_medicine_locations(prescription_code: str) -> list:
                         "z": float(row["z"]) if row["z"] is not None else 0.0,
                         "yaw": float(row["yaw"]) if row["yaw"] is not None else 0.0
                     })
-                print(f"[HIS Sender] 处方 {prescription_code} 包含 {len(medicine_list)} 个药品")
-                for i, med in enumerate(medicine_list):
-                    print(f"[HIS Sender]   药品{i+1}: ID={med['medicine_id']}, xyz=({med['x']}, {med['y']}, {med['z']}), yaw={med['yaw']}")
-                print("=" * 60)
                 return medicine_list
             else:
-                print(f"[HIS Sender] 处方 {prescription_code} 未找到药品坐标信息")
-                print("=" * 60)
                 return []
-    except pymysql.Error as e:
-        print(f"[HIS Sender] MySQL错误: {e}")
-        print("=" * 60)
-        return []
     except Exception as e:
         print(f"[HIS Sender] 查询药品坐标失败: {e}")
-        print("=" * 60)
         return []
     finally:
         if 'conn' in locals():
             conn.close()
-            print(f"[HIS Sender] MySQL连接已关闭")
 
 
 # ===== HisSender 类 =====
@@ -379,8 +371,6 @@ class HisSender:
                                    msg_fields: Optional[dict] = None) -> None:
         tag = self._log_tag()
         interval = settings.car2_signal_interval
-        limit_desc = f"，上限 {max_sends} 次" if max_sends is not None else "，持续至切换/停止"
-        print(f"{tag} [连续发送] 启动 {signal_name}: {message}{limit_desc}")
         count = 0
         try:
             while not stop_event.is_set():
@@ -388,7 +378,7 @@ class HisSender:
                     break
                 count += 1
                 ok = await self._publish_signal_once(message, msg_fields)
-                print(f"{tag} [连续发送] {signal_name} 第 {count} 次 {'✓' if ok else '✗'}")
+                print(f"{tag} [发送] {signal_name} 第{count}次 {'✓' if ok else '✗'}")
                 if max_sends is not None and count >= max_sends:
                     break
                 try:
@@ -398,7 +388,7 @@ class HisSender:
         except asyncio.CancelledError:
             pass
         finally:
-            print(f"{tag} [连续发送] 停止 {signal_name}（共发送 {count} 次）")
+            print(f"{tag} [停止] {signal_name}（共发送{count}次）")
 
     async def stop_current_signal(self) -> None:
         """停止当前正在连续发送的车2 信号（对外接口，用于收到对应回执时立即停）"""
@@ -437,15 +427,7 @@ class HisSender:
             }
             message = json.dumps(message_dict)
 
-            print("=" * 60)
-            print(f"{tag} 发送药品坐标消息:")
-            print(f"{tag}   data: {data}")
-            print(f"{tag}   prescription_code: {prescription_code}")
-            print(f"{tag}   medicine_id: {medicine_id}")
-            print(f"{tag}   x: {medicine_data['x']}, y: {medicine_data['y']}, z: {medicine_data['z']}, yaw: {medicine_data['yaw']}")
-            print(f"{tag}   medicine_total: {medicine_total}, medicine_index: {medicine_index}")
-            print(f"{tag}   发送计数: {self.medicine_send_count[medicine_id]}")
-            print("=" * 60)
+            print(f"{tag} [发送] {data} | 处方={prescription_code} | 药品ID={medicine_id} | 坐标=({medicine_data['x']},{medicine_data['y']},{medicine_data['z']},{medicine_data['yaw']})")
 
             await self.ws_connection.send(message)
             return True
@@ -487,14 +469,9 @@ class HisSender:
                 }
                 message = json.dumps(message_dict)
 
-                print("=" * 60)
-                print(f"{tag} 发送药品完成信号（end）:")
-                print(f"{tag}   发送次数: 第{send_count+1}次（共2次）")
-                print(f"{tag}   data: end, medicine_id: {medicine_id}")
-                print("=" * 60)
+                print(f"{tag} [发送] end | 处方={prescription_code} | 药品ID={medicine_id}")
 
                 await self.ws_connection.send(message)
-                print(f"{tag} end 消息发送成功（第{send_count+1}次）")
 
                 if send_count == 0:
                     await asyncio.sleep(SEND_INTERVAL)
@@ -541,32 +518,27 @@ class HisSender:
         self.all_medicines_completed = False
         self.task_completed = False
 
-        print(f"{tag} 药品状态已重置:")
-        print(f"{tag}   药品总数: {self.medicine_total}")
-        print(f"{tag}   当前药品索引: {self.current_medicine_index}")
-        print("=" * 60)
-
     # ===== 电梯跨楼信号 =====
 
     async def send_lift_across(self, prescription_code: str):
         """启动 lift-across 连续发送（收到 lift-arrive 后调用；启动时自动停①，⑤启动时自动停本信号）"""
         tag = self._log_tag()
         message = f"{prescription_code}_lift-across"
-        print(f"{tag} → 启动 lift-across 连续发送: {message}")
+        print(f"{tag} [发送] lift-across | 处方={prescription_code}")
         await self._start_continuous_send("lift-across", message, max_sends=None)
 
     async def send_lift_open(self, prescription_code: str):
         """启动 lift-open 连续发送（延迟后调用；启动时自动停③，收到 nurse_arrive 后由调用方停本信号）"""
         tag = self._log_tag()
         message = f"{prescription_code}_lift-open"
-        print(f"{tag} → 启动 lift-open 连续发送: {message}")
+        print(f"{tag} [发送] lift-open | 处方={prescription_code}")
         await self._start_continuous_send("lift-open", message, max_sends=None)
 
     async def send_nurse_success(self, prescription_code: str):
         """启动 nurse-success 连续发送（收到 nurse_arrive 后调用；末位信号，发 3 次自动停）"""
         tag = self._log_tag()
         message = f"{prescription_code}_nurse-success"
-        print(f"{tag} → 启动 nurse-success 连续发送: {message}（发 3 次后停止）")
+        print(f"{tag} [发送] nurse-success | 处方={prescription_code}")
         await self._start_continuous_send("nurse-success", message, max_sends=3)
 
     # ===== 药师审核通过信号 =====
@@ -596,32 +568,22 @@ class HisSender:
                 "medicine_total": self.medicine_total,
                 "medicine_index": self.current_medicine_index + 1 if md else 0,
             }
-            print("=" * 60)
-            print(f"{tag} → 车1 pharmacist-success 单发（失败重试，最多 3 次）:")
-            print(f"{tag}   Topic: {self.send_topic}")
-            print(f"{tag}   prescription_code: {prescription_code}")
-            print("=" * 60)
             for attempt in range(1, 4):
                 ok = await self._publish_signal_once(message, msg_fields)
-                print(f"{tag} 车1 pharmacist-success 第 {attempt} 次 {'✓' if ok else '✗'}")
+                print(f"{tag} [发送] pharmacist-success 第{attempt}次 {'✓' if ok else '✗'}")
                 if ok:
                     return
                 if attempt < 3:
                     await asyncio.sleep(settings.car2_signal_interval)
-            print(f"{tag} [ERROR] 车1 pharmacist-success 发送 3 次均失败，放弃")
+            print(f"{tag} [错误] pharmacist-success 发送3次均失败")
             return
         # 车2：纯字符串 data（信息拼在 data 内），连续发送，收到 lift-arrive 后由调用方停
         message = f"{prescription_code}_pharmacist-success"
-        print("=" * 60)
-        print(f"{tag} → 启动 pharmacist-success 连续发送:")
-        print(f"{tag}   Topic: {self.send_topic}")
-        print(f"{tag}   信号: {message}")
-        print(f"{tag}   medicine_id: {medicine_id}")
-        print(f"{tag}   prescription_code: {prescription_code}")
-        print("=" * 60)
+        print(f"{tag} [发送] pharmacist-success | 处方={prescription_code}")
         await self._start_continuous_send("pharmacist-success", message, max_sends=None)
 
-    async def _wait_receipt_silently(self, event: asyncio.Event, timeout: int, desc: str) -> bool:
+    async def _wait_receipt_silently(self, event: asyncio.Event, timeout: int,
+                                      desc: str, prescription_code: str = None) -> bool:
         """重发上限后停止发送，静默等待回执（每30s打印一次等待心跳）。
 
         解耦"重发上限"与"回执等待时长"：真实车1 从 running 到 step5 耗时可能超过
@@ -632,11 +594,19 @@ class HisSender:
         start = time.time()
         deadline = start + timeout
         last_beat = start
+        check_count = 0
         while not event.is_set() and self.sender_running:
             if time.time() >= deadline:
                 print(f"{tag} [ERROR] 静默等待 {desc} 超时（{timeout}s），放弃本处方")
                 return False
             await asyncio.sleep(1)
+            # 每30秒检查一次药单是否被删除
+            check_count += 1
+            if prescription_code and check_count % 30 == 0:
+                if not check_prescription_exists(prescription_code):
+                    print(f"{tag} [STOP] 处方 {prescription_code} 已从数据库删除，停止静默等待")
+                    self.sender_running = False
+                    return False
             now = time.time()
             if now - last_beat >= 30:
                 print(f"{tag} 静默等待回执: {desc}（已等待 {int(now - start)}s/{timeout}s）")
@@ -651,24 +621,24 @@ class HisSender:
         medicine_id = medicine_data["medicine_id"]
         self.expected_medicine_id = medicine_id
 
-        print(f"\n{tag} {'='*60}")
-        print(f"{tag} 开始处理药品 {medicine_index}/{medicine_total} (ID={medicine_id})")
-        print(f"{tag} {'='*60}")
-
         self.started_event.clear()
         self.step5_return_event.clear()
 
         # 阶段1：发送 start，等待 running-started（重发上限后停止发送、静默等待回执）
         max_attempts = settings.medicine_send_max_attempts
         receipt_wait_timeout = settings.medicine_receipt_wait_timeout
-        print(f"{tag} 阶段1：发送 start，等待 running-started（重发上限 {max_attempts} 次，"
-              f"超限后静默等待最长 {receipt_wait_timeout}s）")
         send_count = 0
+        PRESCRIPTION_CHECK_INTERVAL = 3  # 每发送3次检查一次药单是否仍存在
         while not self.started_event.is_set() and self.sender_running:
             if send_count >= max_attempts:
-                print(f"{tag} [WARN] 阶段1 重发超过上限 {max_attempts} 次，停止发送，转入静默等待"
-                      f"（处方={prescription_code}, 药品ID={medicine_id}）")
+                print(f"{tag} [警告] start重发超过上限{max_attempts}次，转入静默等待")
                 break
+            # 每隔 N 次发送检查药单是否被删除
+            if send_count > 0 and send_count % PRESCRIPTION_CHECK_INTERVAL == 0:
+                if not check_prescription_exists(prescription_code):
+                    print(f"{tag} [停止] 处方{prescription_code}已删除，停止发送start")
+                    self.sender_running = False
+                    return False
             send_count += 1
             print(f"{tag} 发送 start（第{send_count}次）")
             await self.send_medicine_to_ros(
@@ -686,25 +656,27 @@ class HisSender:
             # 重发上限已到但回执未达：停止发送，静默等待回执（真实车1 到达时间可能远超重发窗口）
             if not await self._wait_receipt_silently(
                     self.started_event, receipt_wait_timeout,
-                    f"running-started（处方={prescription_code}, 药品ID={medicine_id}）"):
+                    f"running-started（处方={prescription_code}, 药品ID={medicine_id}）",
+                    prescription_code=prescription_code):
                 return False
 
-        print(f"{tag} [OK] 收到 running-started（共发送{send_count}次start）")
         self.medicine_started[medicine_id] = True
 
         # 阶段2：发送 running，等待 running-step5-waiting-end（重发上限后停止发送、静默等待回执）
-        print(f"{tag} 阶段2：发送 running，等待 running-step5-waiting-end（重发上限 {max_attempts} 次，"
-              f"超限后静默等待最长 {receipt_wait_timeout}s）")
         if self.step5_return_event.is_set():
-            print(f"{tag} [OK] step5-return 在阶段1已到达，跳过 running 发送")
+            print(f"{tag} [收到] step5-waiting-end（阶段1已到达，跳过running发送）")
         send_count = 0
         while not self.step5_return_event.is_set() and self.sender_running:
             if send_count >= max_attempts:
-                print(f"{tag} [WARN] 阶段2 重发超过上限 {max_attempts} 次，停止发送，转入静默等待"
-                      f"（处方={prescription_code}, 药品ID={medicine_id}）")
+                print(f"{tag} [警告] running重发超过上限{max_attempts}次，转入静默等待")
                 break
+            # 每隔 N 次发送检查药单是否被删除
+            if send_count > 0 and send_count % PRESCRIPTION_CHECK_INTERVAL == 0:
+                if not check_prescription_exists(prescription_code):
+                    print(f"{tag} [停止] 处方{prescription_code}已删除，停止发送running")
+                    self.sender_running = False
+                    return False
             send_count += 1
-            print(f"{tag} 发送 running（第{send_count}次）")
             await self.send_medicine_to_ros(
                 prescription_code, medicine_data, medicine_index, medicine_total, "running"
             )
@@ -721,26 +693,22 @@ class HisSender:
             # （真实车1 从 running 到 step5 含导航+抓药+放药，耗时可能远超 30s 重发窗口）
             if not await self._wait_receipt_silently(
                     self.step5_return_event, receipt_wait_timeout,
-                    f"running-step5-waiting-end（处方={prescription_code}, 药品ID={medicine_id}）"):
+                    f"running-step5-waiting-end（处方={prescription_code}, 药品ID={medicine_id}）",
+                    prescription_code=prescription_code):
                 return False
 
-        print(f"{tag} [OK] 收到 running-step5-waiting-end（共发送{send_count}次running）")
-
         # 阶段3：发送 end（收到 step5 回执后直接发送，与旧版一致，不依赖药师扫码）
-        print(f"{tag} 阶段3：发送 end（两次，间隔2秒）")
         success = await self.send_medicine_end_to_ros(
             prescription_code, medicine_data, medicine_index, medicine_total
         )
 
         if not success:
-            print(f"{tag} [ERROR] end 消息发送失败")
+            print(f"{tag} [错误] end 消息发送失败")
             return False
 
         # 阶段4：等待3秒
-        print(f"{tag} 阶段4：等待3秒，让ROS端处理end消息...")
         await asyncio.sleep(3)
 
-        print(f"{tag} [OK] 药品 {medicine_index}/{medicine_total} (ID={medicine_id}) 处理完成")
         return True
 
     # ===== 主循环 =====
@@ -749,12 +717,7 @@ class HisSender:
         tag = self._log_tag()
         self._init_events()
 
-        print("=" * 60)
-        print(f"{tag} 服务启动（顺序结构模式）")
-        print(f"{tag} HIS MySQL: {settings.his_mysql_host}:{settings.his_mysql_port}")
-        print(f"{tag} ROS WebSocket: {self.ws_url}")
-        print(f"{tag} Topic: {self.send_topic}")
-        print("=" * 60)
+        print(f"{tag} 服务启动")
 
         self.sender_running = True
 
@@ -763,16 +726,10 @@ class HisSender:
                 ros_available = await self.check_ros_ws_available()
 
                 if not ros_available:
-                    print(f"{tag} ROS WebSocket 不可达，等待重试...")
                     await asyncio.sleep(settings.ros_check_interval)
                     continue
 
                 new_code, new_created_at = get_latest_pending_prescription()
-
-                print(f"{tag} 主循环状态检查:")
-                print(f"{tag}   当前处方编码: {self.current_prescription_code}")
-                print(f"{tag}   查询处方编码: {new_code}")
-                print(f"{tag}   是否相同: {new_code == self.current_prescription_code}")
 
                 if new_code == self.current_prescription_code and new_code:
                     # 同单号：检测是否为删除后重下的新单（created_at 变化）
@@ -788,8 +745,7 @@ class HisSender:
                             pass
                     if (new_created_at and old_created_at
                             and new_created_at != old_created_at):
-                        print(f"{tag} 检测到同单号重新下单: {new_code}"
-                              f"（原下单 {self._prescription_taken_at_str}, 新下单 {new_created_at}），重置流程")
+                        print(f"{tag} [状态] 检测到同单号重新下单: {new_code}，重置流程")
                         purge_stale_events_if_reordered(new_code, new_created_at)
                         self._failed_prescriptions.discard(new_code)
                         self.reset_medicine_state(new_code)
@@ -805,8 +761,7 @@ class HisSender:
 
                 if new_code != self.current_prescription_code:
                     if new_code:
-                        print(f"\n{tag} {'='*40}")
-                        print(f"{tag} 处方编码更新: {self.current_prescription_code} -> {new_code}")
+                        print(f"{tag} [状态] 新处方: {new_code}")
                         # 删除重下自愈：同单号重新下单时清理上一轮旧节点事件
                         # （HIS 删除联动失败时的兜底，防止重入防护误判"阶段一已闭环"不发 start）
                         purge_stale_events_if_reordered(new_code, new_created_at)
@@ -817,16 +772,13 @@ class HisSender:
                         # 新处方（含失败后换新单）：从失败集合中移除，允许重新处理
                         self._failed_prescriptions.discard(new_code)
                         self.reset_medicine_state(new_code)
-                        print(f"{tag} {'='*40}")
                         if self.car_id == 1:
                             record_event(new_code, "N1_prescription_created", "his", "处方已开具，任务开始")
 
                         if not self.medicine_list:
-                            print(f"{tag} 药品列表为空，等待新处方...")
                             await asyncio.sleep(POLL_INTERVAL)
                             continue
                     else:
-                        print(f"{tag} 无待处理处方，等待新处方...")
                         await asyncio.sleep(POLL_INTERVAL)
                         continue
 
@@ -838,20 +790,17 @@ class HisSender:
                         _events = get_events_for_prescriptions([self.current_prescription_code]).get(
                             self.current_prescription_code, [])
                         if any(e["event_key"] == "N5_scanned_outbound" for e in _events):
-                            print(f"{tag} 处方 {self.current_prescription_code} 阶段一已闭环（N5 事件存在），跳过药品发送")
                             await asyncio.sleep(POLL_INTERVAL)
                             continue
-                    except Exception as _e:
-                        print(f"{tag} [警告] 重入防护事件查询失败: {_e}")
+                    except Exception:
+                        pass
 
                 # 发送失败已放弃的处方：跳过，直到新处方到来（防止持续重试刷屏）
                 if self.current_prescription_code and self.current_prescription_code in self._failed_prescriptions:
-                    print(f"{tag} 处方 {self.current_prescription_code} 此前发送失败已放弃，等待新处方...")
                     await asyncio.sleep(POLL_INTERVAL)
                     continue
 
                 if self.task_completed:
-                    print(f"{tag} 任务已完成，停止发送")
                     await asyncio.sleep(SEND_INTERVAL)
                     continue
 
@@ -869,7 +818,6 @@ class HisSender:
 
                         medicine_id_check = current_medicine.get("medicine_id", 0)
                         if medicine_id_check == 0 or medicine_id_check is None:
-                            print(f"{tag} ERROR: 当前药品的 medicine_id 为 0 或 NULL，跳过")
                             continue
 
                         medicine_index_display = self.current_medicine_index + 1
@@ -884,18 +832,15 @@ class HisSender:
                         if success:
                             self.last_sent_code = self.current_prescription_code
                         else:
-                            print(f"{tag} 药品发送失败，放弃本处方（加入失败集合，等待新处方）")
                             self._failed_prescriptions.add(self.current_prescription_code)
                             break
 
                     if self.current_medicine_index >= self.medicine_total - 1:
-                        print(f"{tag} 所有药品发送完成")
                         self.all_medicines_completed = True
                         self.current_medicine_index = self.medicine_total
                         await asyncio.sleep(POLL_INTERVAL)
                 else:
                     if self.current_prescription_code and not self.medicine_list:
-                        print(f"{tag} 处方 {self.current_prescription_code} 的药品列表为空，停止发送")
                         self.current_prescription_code = None
                         self.expected_prescription_code = None
                         self.medicine_list = []
@@ -910,8 +855,6 @@ class HisSender:
                 break
             except Exception as e:
                 print(f"{tag} 主循环异常: {e}")
-                import traceback
-                traceback.print_exc()
                 await asyncio.sleep(5)
 
     async def start(self):
@@ -960,93 +903,59 @@ class HisSender:
 
     def notify_medicine_started(self, medicine_id: int, prescription_code: str):
         tag = self._log_tag()
-        print("=" * 60)
-        print(f"{tag} 收到药品 started 通知:")
-        print(f"{tag}   收到的消息: {medicine_id}_{prescription_code}_running-started")
-        print(f"{tag}   当前处方编码: {self.current_prescription_code}")
-        print(f"{tag}   预期药品ID: {self.expected_medicine_id}")
-
         if prescription_code != self.current_prescription_code:
-            print(f"{tag} [ERROR] 处方编码不匹配！不设置 started 事件")
-            print("=" * 60)
+            print(f"{tag} [收到] running-started | 处方={prescription_code} | 药品ID={medicine_id} | 处方不匹配，忽略")
             return
 
         if medicine_id == self.expected_medicine_id:
-            print(f"{tag} [OK] 药品ID匹配！设置 started 事件")
+            print(f"{tag} [收到] running-started | 处方={prescription_code} | 药品ID={medicine_id}")
             self.medicine_started[medicine_id] = True
             if self.started_event:
                 self.started_event.set()
         else:
-            print(f"{tag} [ERROR] 药品ID不匹配！收到={medicine_id} 预期={self.expected_medicine_id}")
-        print("=" * 60)
+            print(f"{tag} [收到] running-started | 处方={prescription_code} | 药品ID={medicine_id} | 药品ID不匹配，忽略")
 
     def notify_prescription_step5_return(self, prescription_code: str, medicine_id: int = None):
         tag = self._log_tag()
-        print("=" * 60)
-        print(f"{tag} 收到药品完成通知（Step5返回）:")
-        print(f"{tag}   prescription_code: {prescription_code}, medicine_id: {medicine_id}")
-        print(f"{tag}   当前处方编码: {self.current_prescription_code}")
-        print(f"{tag}   预期药品ID: {self.expected_medicine_id}")
-
         if prescription_code != self.current_prescription_code:
-            print(f"{tag} [ERROR] 处方编码不匹配！")
-            print("=" * 60)
+            print(f"{tag} [收到] step5-waiting-end | 处方={prescription_code} | 药品ID={medicine_id} | 处方不匹配，忽略")
             return
 
-        if medicine_id is None:
-            print(f"{tag} [ERROR] 药单级消息缺少 medicine_id！")
-            print("=" * 60)
+        if medicine_id is None or medicine_id != self.expected_medicine_id:
+            print(f"{tag} [收到] step5-waiting-end | 处方={prescription_code} | 药品ID={medicine_id} | 药品ID不匹配，忽略")
             return
 
-        if medicine_id != self.expected_medicine_id:
-            print(f"{tag} [ERROR] 药品ID不匹配！收到={medicine_id} 预期={self.expected_medicine_id}")
-            print("=" * 60)
-            return
-
-        print(f"{tag} [OK] 处方编码和药品ID都匹配！设置 step5-return 事件")
+        print(f"{tag} [收到] step5-waiting-end | 处方={prescription_code} | 药品ID={medicine_id}")
         if self.step5_return_event:
             self.step5_return_event.set()
-        print("=" * 60)
 
     def notify_medicine_completed(self, medicine_id: int, prescription_code: str):
         tag = self._log_tag()
-        print("=" * 60)
-        print(f"{tag} 收到药品完成通知（end消息）:")
-        print(f"{tag}   {medicine_id}_{prescription_code}_end")
-        print(f"{tag}   （顺序结构下由for循环自动切换，无需手动切换）")
-        print("=" * 60)
+        print(f"{tag} [收到] end | 处方={prescription_code} | 药品ID={medicine_id}")
 
     def notify_all_medicines_completed(self, prescription_code: str):
         tag = self._log_tag()
-        print("=" * 60)
-        print(f"{tag} 收到所有药品完成信号（all_completed）:")
-        print(f"{tag}   prescription_code: {prescription_code}")
-        print(f"{tag}   当前: {self.current_prescription_code}")
-
         if prescription_code != self.current_prescription_code:
-            print(f"{tag} [ERROR] 处方编码不匹配！")
-            print("=" * 60)
+            print(f"{tag} [收到] all_completed | 处方={prescription_code} | 处方不匹配，忽略")
             return
 
-        print(f"{tag} [OK] 处方编码匹配！设置 all_completed 和 task_completed")
+        print(f"{tag} [收到] all_completed | 处方={prescription_code}")
         self.all_medicines_completed = True
         self.task_completed = True
         if self.all_completed_event:
             self.all_completed_event.set()
         if self.task_end_event:
             self.task_end_event.set()
-        print("=" * 60)
 
     def notify_task_completed(self, prescription_code: str):
         tag = self._log_tag()
-        print(f"{tag} 收到任务完成信号: {prescription_code}")
         if prescription_code == self.current_prescription_code:
-            print(f"{tag} [OK] 处方编码匹配")
+            print(f"{tag} [收到] end(药单级) | 处方={prescription_code}")
             self.task_completed = True
             if self.task_end_event:
                 self.task_end_event.set()
         else:
-            print(f"{tag} [ERROR] end 处方编码不匹配: {prescription_code} != {self.current_prescription_code}")
+            print(f"{tag} [收到] end(药单级) | 处方={prescription_code} | 处方不匹配，忽略")
 
 
 # ===== 工厂函数：创建并注册小车实例 =====
