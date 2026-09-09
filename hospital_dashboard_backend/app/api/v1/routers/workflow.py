@@ -481,6 +481,15 @@ async def scan_progress(
     return {"status": "success", "message": detail}
 
 
+@router.post("/workflow/prescription-created")
+async def prescription_created(prescription_code: str = Body(..., embed=True)):
+    """接收 HIS 下单成功通知，记录大屏流程 N1 节点。"""
+    if not prescription_code:
+        raise HTTPException(status_code=400, detail="缺少处方编码")
+    record_event(prescription_code, "N1_prescription_created", "his", "处方已开具")
+    return {"status": "success", "message": "N1 节点已记录"}
+
+
 @router.delete("/workflow/prescription-events")
 async def delete_prescription_events(prescription_code: str = Body(..., embed=True)):
     """HIS 删除处方时联动调用 → 清空该处方在大屏侧的全部节点数据（不做存储）

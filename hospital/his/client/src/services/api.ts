@@ -71,6 +71,16 @@ export interface AuditChainChange {
   base_continuation_records?: AuditChainRecord[];
   branch_records?: AuditBranchRecord[];
 }
+
+export interface PrescriptionAnalysisResult {
+  summary: string;
+  risk_level: '低' | '中' | '高' | '需复核';
+  findings: string[];
+  suggestions: string[];
+  model: string;
+  analyzed_at: string;
+  simulated: boolean;
+}
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL,
   timeout: Number(import.meta.env.VITE_API_TIMEOUT_MS),
@@ -89,7 +99,7 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (res) => res,
   (err) => {
-    if (err.response?.status === 401 || err.response?.status === 503) {
+    if (err.response?.status === 401) {
       localStorage.removeItem('token');
       localStorage.removeItem('user');
       window.location.href = '/login';
@@ -226,6 +236,9 @@ export const auditChainApi = {
   accept: (id: number) =>
     api.post(`/audit-chain/changes/${id}/accept`).then((r) => r.data),
 
+  reject: (id: number) =>
+    api.post(`/audit-chain/changes/${id}/reject`).then((r) => r.data),
+
   demoTamper: () =>
     api.post('/audit-chain/demo/tamper').then((r) => r.data),
 
@@ -241,6 +254,9 @@ export const prescriptionApi = {
 
   getById: (id: number) =>
     api.get<Prescription>(`/prescriptions/${id}`).then((r) => r.data),
+
+  analyze: (id: number) =>
+    api.post<PrescriptionAnalysisResult>(`/prescriptions/${id}/analyze`).then((r) => r.data),
 
   create: (data: PrescriptionFormData) =>
     api.post('/prescriptions', data).then((r) => r.data),

@@ -5,13 +5,50 @@ import pool from '../db';
 import { config } from '../config';
 import { authMiddleware, requireRole } from '../middleware/auth';
 import { ensureDeliverySchema } from '../services/deliverySchema';
-import { createPrescriptionDeletionChange, ensureAuditChainTable, purgeTestPrescriptionAudit } from '../services/auditChain';
+import {
+  appendAuditRecord,
+  buildPrescriptionSnapshot,
+  createPrescriptionDeletionChange,
+  ensureAuditChainTable,
+  purgeTestPrescriptionAudit,
+} from '../services/auditChain';
 import { ensureTestSupport } from '../services/testSupport';
+import { analyzePrescription } from '../services/prescriptionAnalysis';
 
 const router = Router();
 router.use(authMiddleware);
 
 const PRESCRIPTION_ITEM_COUNT = 5;
+
+// 处方提交成功后通知大屏记录 N1 节点；大屏暂不可用不应影响 HIS 下单。
+function notifyBackendPrescriptionCreated(prescriptionCode: string): void {
+  const base = config.services.hospitalBackendUrl;
+  const target = new URL(`${base}/workflow/prescription-created`);
+  const body = JSON.stringify({ prescription_code: prescriptionCode });
+  const transport = target.protocol === 'https:' ? https : http;
+  const req = transport.request({
+    hostname: target.hostname,
+    port: Number(target.port) || (target.protocol === 'https:' ? 443 : 80),
+    path: target.pathname + target.search,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+    timeout: config.services.hospitalBackendTimeoutMs,
+  }, (response) => {
+    let raw = '';
+    response.setEncoding('utf8');
+    response.on('data', (chunk) => { raw += chunk; });
+    response.on('end', () => {
+      console.log(`[处方创建联动] 大屏后端响应 ${response.statusCode}: ${raw}`);
+    });
+  });
+  req.on('error', (error) => console.error(`[处方创建联动] 通知大屏后端失败（${prescriptionCode}）: ${error.message}`));
+  req.on('timeout', () => {
+    req.destroy();
+    console.error(`[处方创建联动] 通知大屏后端超时（${prescriptionCode}）`);
+  });
+  req.write(body);
+  req.end();
+}
 
 // 删除处方后通知大屏后端清空该处方的节点数据（workflow_events 等，不做存储）
 // 失败仅打日志，不回滚删除（大屏后端暂不可用不应阻塞 HIS 删除）
@@ -167,6 +204,7 @@ router.post('/', requireRole('doctor', 'admin'), async (req: Request, res: Respo
     const resolvedItems: Array<PrescriptionItemPayload & { trace_code: string; trace_code_id: number }> = [];
 
     await ensurePrescriptionTraceCodesTable(conn);
+    await ensureAuditChainTable(conn);
     await conn.beginTransaction();
 
     for (const item of items as PrescriptionItemPayload[]) {
@@ -236,7 +274,22 @@ router.post('/', requireRole('doctor', 'admin'), async (req: Request, res: Respo
       );
     }
 
+    const snapshot = await buildPrescriptionSnapshot(conn, prescriptionId);
+    if (!snapshot) throw new Error('处方快照生成失败');
+    await appendAuditRecord(conn, {
+      eventType: 'PRESCRIPTION_CREATED',
+      entityType: 'prescription',
+      entityId: prescriptionId,
+      flowStatus: 'prescription_created',
+      traceCodes: resolvedItems.map((item) => item.trace_code),
+      prescriptionId,
+      prescriptionCode,
+      operatorId: req.user!.id,
+      snapshot,
+    });
+
     await conn.commit();
+    notifyBackendPrescriptionCreated(prescriptionCode);
     res.status(201).json({ id: prescriptionId, prescription_code: prescriptionCode, message: '处方已创建，已进入可发药状态' });
   } catch (err: any) {
     await conn.rollback();
@@ -344,6 +397,59 @@ router.get('/:id', async (req: Request, res: Response) => {
     res.json({ ...prescription, items });
   } catch (err: any) {
     res.status(500).json({ error: '服务器错误: ' + err.message });
+  }
+});
+
+// POST /api/prescriptions/:id/analyze — 将单张处方脱敏后提交云端 AI 审方。
+router.post('/:id/analyze', async (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      res.status(400).json({ error: '处方编号无效' });
+      return;
+    }
+
+    const conditions = ['p.id = ?'];
+    const params: unknown[] = [id];
+    if (req.user!.role === 'doctor') {
+      conditions.push('p.doctor_id = ?');
+      params.push(req.user!.id);
+    }
+
+    const [prescriptions] = await pool.query<any[]>(
+      `SELECT p.prescription_code, p.prescription_type, p.diagnosis, p.note,
+              pt.gender AS patient_gender, pt.age AS patient_age
+       FROM prescriptions p
+       LEFT JOIN patients pt ON p.patient_id = pt.id
+       WHERE ${conditions.join(' AND ')}`,
+      params
+    );
+    if (!prescriptions.length) {
+      res.status(404).json({ error: '处方不存在或无权分析' });
+      return;
+    }
+
+    const [items] = await pool.query<any[]>(
+      `SELECT m.name, m.specification, pi.dosage, pi.usage_method,
+              pi.frequency, pi.days, pi.quantity
+       FROM prescription_items pi
+       LEFT JOIN medicines m ON pi.medicine_id = m.id
+       WHERE pi.prescription_id = ?`,
+      [id]
+    );
+    const prescription = prescriptions[0];
+    const result = await analyzePrescription({
+      prescription_code: prescription.prescription_code || `#${id}`,
+      prescription_type: prescription.prescription_type,
+      patient: { gender: prescription.patient_gender, age: prescription.patient_age },
+      diagnosis: prescription.diagnosis,
+      note: prescription.note,
+      medicines: items,
+    });
+    res.json(result);
+  } catch (err: any) {
+    const status = String(err.message || '').includes('DEEPSEEK_API_KEY') ? 503 : 502;
+    res.status(status).json({ error: '云端 AI 分析失败: ' + err.message });
   }
 });
 

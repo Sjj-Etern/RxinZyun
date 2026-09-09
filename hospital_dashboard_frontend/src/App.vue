@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { computed, ref, onMounted, onUnmounted } from 'vue'
 import CameraFeed from './components/CameraFeed.vue'
 import CadScene from './components/CadScene.vue'
 import PrescriptionProgress from './components/PrescriptionProgress.vue'
@@ -9,8 +9,13 @@ import PrescriptionMonitor from './components/PrescriptionMonitor.vue'
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8080'
 
 // 温湿度数据
-const temperature = ref(32)
+const temperature = ref(35)
 const humidity = ref(60)
+const configuredTemperatureAlarmThreshold = Number(import.meta.env.VITE_TEMPERATURE_ALARM_THRESHOLD)
+const temperatureAlarmThreshold = Number.isFinite(configuredTemperatureAlarmThreshold)
+  ? configuredTemperatureAlarmThreshold
+  : 30
+const isTemperatureAlarm = computed(() => Number(temperature.value) > temperatureAlarmThreshold)
 let sensorTimer = null
 
 // 获取传感器数据
@@ -95,7 +100,7 @@ onUnmounted(() => {
         </div>
         <div class="divider-vertical"></div>
         <div class="weather-section">
-          <div class="weather-item">
+          <div class="weather-item" :class="{ 'temperature-alarm-value': isTemperatureAlarm }">
             <svg class="header-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
               <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
             </svg>
@@ -110,6 +115,11 @@ onUnmounted(() => {
         </div>
       </div>
     </header>
+
+    <div v-if="isTemperatureAlarm" class="temperature-alarm" role="alert">
+      <span class="temperature-alarm-icon">!</span>
+      <span>温度报警：当前 {{ temperature }}℃，已超过阈值 {{ temperatureAlarmThreshold }}℃</span>
+    </div>
 
     <!-- 左右分栏布局 2:1 -->
     <div class="content">
@@ -258,6 +268,45 @@ onUnmounted(() => {
   font-family: 'Outfit', sans-serif;
   min-width: 50px;
   text-align: right;
+}
+.weather-item.temperature-alarm-value .header-icon,
+.weather-item.temperature-alarm-value .value {
+  color: #ff5b5b;
+  filter: drop-shadow(0 0 5px rgba(255, 91, 91, 0.8));
+}
+
+.temperature-alarm {
+  position: fixed;
+  top: 96px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 20px;
+  color: #fff;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  background: rgba(175, 24, 24, 0.92);
+  border: 1px solid #ff7777;
+  box-shadow: 0 0 18px rgba(255, 59, 59, 0.7);
+  animation: temperature-alarm-pulse 1.2s ease-in-out infinite alternate;
+}
+.temperature-alarm-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+  font-size: 14px;
+}
+@keyframes temperature-alarm-pulse {
+  from { opacity: 0.78; }
+  to { opacity: 1; }
 }
 
 /* 左右分栏布局 2:1 */

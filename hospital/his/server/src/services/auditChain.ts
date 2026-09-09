@@ -6,11 +6,13 @@ const CHAIN_VERSION = 'local-audit-chain-v2';
 let auditSchemaReady = false;
 
 export type AuditEventType =
+  | 'PRESCRIPTION_CREATED'
   | 'PHARMACIST_SCAN_CONFIRMED'
   | 'NURSE_SCAN_CONFIRMED'
   | 'PRESCRIPTION_COMPLETED'
   | 'DATA_CHANGED'
-  | 'DATA_DELETED';
+  | 'DATA_DELETED'
+  | 'DATA_CHANGE_REVERTED';
 
 export type PrescriptionSnapshot = {
   prescription: Record<string, unknown>;
@@ -166,7 +168,7 @@ export const createPrescriptionDeletionChange = async (
     `SELECT snapshot_json, snapshot_hash
      FROM audit_chain_records
      WHERE entity_type = 'prescription' AND entity_id = ?
-       AND event_type = 'PRESCRIPTION_COMPLETED' AND snapshot_hash IS NOT NULL
+       AND event_type IN ('NURSE_SCAN_CONFIRMED', 'PRESCRIPTION_COMPLETED') AND snapshot_hash IS NOT NULL
      ORDER BY id DESC LIMIT 1`,
     [String(prescriptionId)]
   );
@@ -279,7 +281,7 @@ const eventExists = async (conn: any, prescriptionId: number, eventType: AuditEv
   return rows.length > 0;
 };
 
-/** 每张处方仅在整轮扫码完成时生成节点；护士确认后追加处方结束节点。 */
+/** 第一次扫码完成生成药师确认节点，第二次扫码完成生成护士复核节点。 */
 export const appendCompletedScanStages = async (conn: any, prescriptionId: number, operatorId?: number | null) => {
   await ensureAuditChainTable(conn);
   const [counts] = await conn.query(
@@ -307,12 +309,6 @@ export const appendCompletedScanStages = async (conn: any, prescriptionId: numbe
       await appendAuditRecord(conn, {
         eventType: 'NURSE_SCAN_CONFIRMED', entityType: 'prescription', entityId: prescriptionId,
         flowStatus: 'nurse_confirmed', traceCodes, prescriptionId, prescriptionCode, operatorId, snapshot,
-      });
-    }
-    if (!(await eventExists(conn, prescriptionId, 'PRESCRIPTION_COMPLETED'))) {
-      await appendAuditRecord(conn, {
-        eventType: 'PRESCRIPTION_COMPLETED', entityType: 'prescription', entityId: prescriptionId,
-        flowStatus: 'prescription_completed', traceCodes, prescriptionId, prescriptionCode, operatorId, snapshot,
       });
     }
   }

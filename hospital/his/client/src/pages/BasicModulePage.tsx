@@ -23,7 +23,6 @@ type BasicModuleKind =
   | 'writeoff'
   | 'operationLog'
   | 'medicineDown'
-  | 'restock'
   | 'inventory';
 
 interface Props {
@@ -41,7 +40,6 @@ export default function BasicModulePage({ kind, title, icon }: Props) {
   const [keyword, setKeyword] = useState('');
   const [busyId, setBusyId] = useState<number | null>(null);
   const [prefixDrafts, setPrefixDrafts] = useState<Record<number, string>>({});
-  const [restockDrafts, setRestockDrafts] = useState<Record<number, string>>({});
   const [writeoffIds, setWriteoffIds] = useState<Set<number>>(new Set());
   const [downIds, setDownIds] = useState<Set<number>>(new Set());
   const [auditRecords, setAuditRecords] = useState<AuditChainRecord[]>([]);
@@ -188,16 +186,6 @@ export default function BasicModulePage({ kind, title, icon }: Props) {
     await updateMedicine(medicine, { trace_code_prefix: prefix });
   };
 
-  const restock = async (medicine: Medicine) => {
-    const amount = Number(restockDrafts[medicine.id] || 0);
-    if (!Number.isFinite(amount) || amount <= 0) {
-      showToast('请输入大于 0 的补药数量', 'error');
-      return;
-    }
-    await updateMedicine(medicine, { stock: Number(medicine.stock || 0) + amount });
-    setRestockDrafts((prev) => ({ ...prev, [medicine.id]: '' }));
-  };
-
   const renderContent = () => {
     if (loading) return <div className="loading">加载中...</div>;
 
@@ -274,6 +262,7 @@ export default function BasicModulePage({ kind, title, icon }: Props) {
           checking={auditChecking}
           action={auditAction}
           onAccept={(id) => runAuditAction(`accept-${id}`, () => auditChainApi.accept(id), '新数据链已设为活动链')}
+          onReject={(id) => runAuditAction(`reject-${id}`, () => auditChainApi.reject(id), '已取消合并并撤回本机更改')}
         />
       );
     }
@@ -288,22 +277,6 @@ export default function BasicModulePage({ kind, title, icon }: Props) {
               <td>{m.stock}</td>
               <td>{downIds.has(m.id) ? '已下架' : '在架'}</td>
               <td><button className="glass-btn glass-btn--danger glass-btn--sm" disabled={downIds.has(m.id)} onClick={() => setDownIds((prev) => new Set(prev).add(m.id))}>下架</button></td>
-            </tr>
-          ))}
-        </BasicTable>
-      );
-    }
-
-    if (kind === 'restock') {
-      return (
-        <BasicTable headers={['药品', '规格', '当前库存', '补药数量', '操作']}>
-          {filteredMedicines.map((m) => (
-            <tr key={m.id}>
-              <td><strong>{m.name}</strong></td>
-              <td>{m.specification || '-'}</td>
-              <td>{m.stock}</td>
-              <td><input className="glass-input module-basic-input" type="number" min="1" value={restockDrafts[m.id] || ''} onChange={(e) => setRestockDrafts((prev) => ({ ...prev, [m.id]: e.target.value }))} placeholder="数量" /></td>
-              <td><button className="glass-btn glass-btn--primary glass-btn--sm" disabled={busyId === m.id} onClick={() => restock(m)}>确认补药</button></td>
             </tr>
           ))}
         </BasicTable>
@@ -326,7 +299,7 @@ export default function BasicModulePage({ kind, title, icon }: Props) {
     );
   };
 
-  const showSearch = ['medicineSettings', 'medicineDown', 'restock', 'inventory'].includes(kind);
+  const showSearch = ['medicineSettings', 'medicineDown', 'inventory'].includes(kind);
 
   return (
     <div>
@@ -382,11 +355,13 @@ function Stat({ label, value }: { label: string; value: number }) {
 }
 
 const AUDIT_EVENT_LABELS: Record<string, string> = {
-  PHARMACIST_SCAN_CONFIRMED: '调剂药师确认',
-  NURSE_SCAN_CONFIRMED: '护士确认',
+  PRESCRIPTION_CREATED: '医生开方',
+  PHARMACIST_SCAN_CONFIRMED: '药师确认',
+  NURSE_SCAN_CONFIRMED: '护士复核',
   PRESCRIPTION_COMPLETED: '处方结束',
   DATA_CHANGED: '数据更改',
   DATA_DELETED: '删除更改',
+  DATA_CHANGE_REVERTED: '触发更改撤回',
 };
 
 function shortHash(value?: string | null) {
@@ -402,6 +377,7 @@ function AuditChainDashboard({
   checking,
   action,
   onAccept,
+  onReject,
 }: {
   records: AuditChainRecord[];
   verify: AuditChainVerifyResult | null;
@@ -410,8 +386,10 @@ function AuditChainDashboard({
   checking: boolean;
   action: string;
   onAccept: (id: number) => void;
+  onReject: (id: number) => void;
 }) {
   const [acceptConfirmOpen, setAcceptConfirmOpen] = useState(false);
+  const [rejectConfirmOpen, setRejectConfirmOpen] = useState(false);
   const [differenceFocused, setDifferenceFocused] = useState(false);
   const differenceRef = useRef<HTMLDivElement | null>(null);
   const supportedEvents = new Set(Object.keys(AUDIT_EVENT_LABELS));
@@ -420,27 +398,10 @@ function AuditChainDashboard({
     .filter((change) => change.status === 'pending')
     .sort((a, b) => new Date(a.detected_at).getTime() - new Date(b.detected_at).getTime() || a.id - b.id);
   const pendingChange = pendingChanges[0];
-  const latestAccepted = changes.find((change) => change.status === 'accepted');
-  const focusPrescriptionId = String(pendingChange?.prescription_id || latestAccepted?.prescription_id || chronological[chronological.length - 1]?.entity_id || '');
+  const focusPrescriptionId = String(pendingChange?.prescription_id || chronological[chronological.length - 1]?.entity_id || '');
   const prescriptionRecords = chronological.filter((record) => String(record.entity_id) === focusPrescriptionId);
-  const acceptedMarker = latestAccepted
-    ? prescriptionRecords.findIndex((record) => Number(record.change_id) === latestAccepted.id && record.event_type === 'DATA_CHANGED')
-    : -1;
-  const firstScan = prescriptionRecords.find((record) => record.event_type === 'PHARMACIST_SCAN_CONFIRMED');
-  const secondScan = prescriptionRecords.find((record) => record.event_type === 'NURSE_SCAN_CONFIRMED');
-  const activeTail = acceptedMarker >= 0
-    ? prescriptionRecords.slice(acceptedMarker)
-    : prescriptionRecords.slice(-3);
   const pendingBaselineId = Number(pendingChange?.baseline_record_id || 0);
-  const pendingBaseline = pendingChange
-    ? prescriptionRecords.filter((record) => !pendingBaselineId || record.id <= pendingBaselineId).slice(-3)
-    : [];
-  const pendingContinuation = pendingChange?.base_continuation_records || [];
-  const visibleNodes = pendingChange
-    ? [...pendingBaseline, ...pendingContinuation]
-    : acceptedMarker >= 0
-      ? [firstScan, secondScan, ...activeTail].filter((record): record is AuditChainRecord => Boolean(record))
-      : activeTail;
+  const visibleNodes = prescriptionRecords;
   const fallbackBranchRecords: AuditBranchRecord[] = pendingChange ? [
     {
       kind: 'change', source_record_id: null, event_type: pendingChange.change_type === 'deleted' ? 'DATA_DELETED' : 'DATA_CHANGED', entity_id: String(pendingChange.prescription_id),
@@ -457,6 +418,10 @@ function AuditChainDashboard({
   const isChainBroken = Boolean(verify && !verify.valid);
   const hasDataChange = Boolean(pendingChange);
   const latest = chronological[chronological.length - 1];
+  const acceptedChangeForRecord = (record: AuditChainRecord) =>
+    ['DATA_CHANGED', 'DATA_DELETED'].includes(record.event_type)
+      ? changes.find((change) => change.status === 'accepted' && change.id === Number(record.change_id))
+      : undefined;
 
   const locateDifference = () => {
     differenceRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -473,7 +438,10 @@ function AuditChainDashboard({
         event.preventDefault();
         locateDifference();
       }
-      if (event.key === 'Escape') setAcceptConfirmOpen(false);
+      if (event.key === 'Escape') {
+        setAcceptConfirmOpen(false);
+        setRejectConfirmOpen(false);
+      }
     };
     window.addEventListener('keydown', handleShortcut);
     return () => window.removeEventListener('keydown', handleShortcut);
@@ -518,19 +486,22 @@ function AuditChainDashboard({
         <section className="audit-chain-panel audit-chain-panel--active">
           {hasDataChange && <div className="audit-chain-panel-head"><h4>当前基线</h4></div>}
           <div className="audit-chain-visual audit-chain-visual--vertical" aria-label="已确认活动链" tabIndex={0}>
-            {visibleNodes.length === 0 ? <div className="audit-chain-empty">暂无存证</div> : visibleNodes.map((record, index) => (
-              <div className={`audit-chain-node-row ${record.event_type === 'DATA_CHANGED' && latestAccepted && Number(record.change_id) === latestAccepted.id ? 'audit-chain-node-row--analysis' : ''}`} key={record.id}>
-                <div className={`audit-chain-node ${record.event_type === 'DATA_CHANGED' ? 'audit-chain-node--changed' : record.event_type === 'DATA_DELETED' ? 'audit-chain-node--deleted' : ''} ${hasDataChange && record.id === pendingBaselineId ? 'audit-chain-node--baseline-alert' : ''} ${differenceFocused && record.id === pendingBaselineId ? 'audit-chain-node--difference-focus' : ''}`}>
-                  <div className="audit-chain-node-index">节点 {index + 1}</div>
-                  {hasDataChange && record.id === pendingBaselineId && <div className="audit-chain-node-alert">原记录已与数据库数据偏离</div>}
-                  <div className="audit-chain-node-title">{AUDIT_EVENT_LABELS[record.event_type]}</div>
-                  <div className="audit-chain-node-time">{formatDateTime(record.event_time)}</div>
-                  <div className="audit-chain-node-hash"><span>HASH</span>{shortHash(record.current_hash)}</div>
-                  {index < visibleNodes.length - 1 && <span className="audit-chain-link" />}
+            {visibleNodes.length === 0 ? <div className="audit-chain-empty">暂无存证</div> : visibleNodes.map((record, index) => {
+              const acceptedChange = acceptedChangeForRecord(record);
+              return (
+                <div className={`audit-chain-node-row ${acceptedChange ? 'audit-chain-node-row--analysis' : ''}`} key={record.id}>
+                  <div className={`audit-chain-node ${record.event_type === 'DATA_CHANGED' ? 'audit-chain-node--changed' : record.event_type === 'DATA_DELETED' ? 'audit-chain-node--deleted' : ''} ${hasDataChange && record.id === pendingBaselineId ? 'audit-chain-node--baseline-alert' : ''} ${differenceFocused && record.id === pendingBaselineId ? 'audit-chain-node--difference-focus' : ''}`}>
+                    <div className="audit-chain-node-index">节点 {index + 1}</div>
+                    {hasDataChange && record.id === pendingBaselineId && <div className="audit-chain-node-alert">原记录已与数据库数据偏离</div>}
+                    <div className="audit-chain-node-title">{AUDIT_EVENT_LABELS[record.event_type]}</div>
+                    <div className="audit-chain-node-time">{formatDateTime(record.event_time)}</div>
+                    <div className="audit-chain-node-hash"><span>HASH</span>{shortHash(record.current_hash)}</div>
+                    {index < visibleNodes.length - 1 && <span className="audit-chain-link" />}
+                  </div>
+                  {acceptedChange && renderAnalysis(acceptedChange)}
                 </div>
-                {record.event_type === 'DATA_CHANGED' && latestAccepted && Number(record.change_id) === latestAccepted.id && renderAnalysis(latestAccepted)}
-              </div>
-            ))}
+              );
+            })}
             {hasDataChange && visibleNodes.length > 0 && <div className="audit-chain-node-row audit-chain-node-row--spacer" aria-hidden="true" />}
           </div>
         </section>
@@ -556,7 +527,7 @@ function AuditChainDashboard({
               return <div ref={isChangeNode ? differenceRef : undefined} className={`audit-chain-node-row ${isChangeNode ? 'audit-chain-node-row--analysis' : ''}`} key={`${record.kind}-${record.source_record_id ?? index}`}>
                 {isChangeNode && <motion.span className="audit-change-bridge" aria-hidden="true" initial={{ opacity: 0, scale: .82 }} animate={{ opacity: 1, scale: 1 }} transition={{ type: 'spring', stiffness: 280, damping: 20 }}>→</motion.span>}
                 <div className={`audit-chain-node ${isChangeNode ? (record.event_type === 'DATA_DELETED' ? 'audit-chain-node--deleted' : 'audit-chain-node--changed') : isCompletionNode ? 'audit-chain-node--candidate' : ''} ${differenceFocused && isChangeNode ? 'audit-chain-node--difference-focus' : ''}`}>
-                  <div className="audit-chain-node-index">节点 {index + 3}{isLatestNode ? ' · 最新' : ''}</div>
+                  <div className="audit-chain-node-index">节点 {visibleNodes.length + index + 1}{isLatestNode ? ' · 最新' : ''}</div>
                   <div className="audit-chain-node-title">{isChangeNode ? (record.event_type === 'DATA_DELETED' ? '删除更改' : '数据更改') : isCompletionNode ? '处方结束 · 新链' : AUDIT_EVENT_LABELS[record.event_type]}</div>
                   <div className="audit-chain-node-time">{formatDateTime(record.event_time)}</div>
                   <div className="audit-chain-node-hash"><span>{isChangeNode ? 'NEW' : 'HASH'}</span>{shortHash(record.current_hash)}</div>
@@ -569,6 +540,9 @@ function AuditChainDashboard({
           <div className="audit-sync-action">
             <button className="glass-btn audit-accept-btn" disabled={Boolean(action)} onClick={() => setAcceptConfirmOpen(true)}>
               {action === `accept-${pendingChange.id}` ? '更新中…' : '同步差异分支'}
+            </button>
+            <button className="glass-btn glass-btn--outline audit-reject-btn" disabled={Boolean(action)} onClick={() => setRejectConfirmOpen(true)}>
+              {action === `reject-${pendingChange.id}` ? '撤回中…' : '不合并节点'}
             </button>
           </div>
         </motion.section>}
@@ -590,6 +564,28 @@ function AuditChainDashboard({
               <div className="confirm-actions">
                 <motion.button className="glass-btn glass-btn--primary" disabled={Boolean(action)} whileTap={{ scale: .97 }} onClick={() => { setAcceptConfirmOpen(false); onAccept(pendingChange.id); }}>确认同步</motion.button>
                 <button className="glass-btn glass-btn--outline" disabled={Boolean(action)} onClick={() => setAcceptConfirmOpen(false)}>取消</button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>, document.body)}
+
+      {createPortal(<AnimatePresence>
+        {pendingChange && rejectConfirmOpen && (
+          <motion.div className="confirm-overlay audit-confirm-overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setRejectConfirmOpen(false)}>
+            <motion.div className="confirm-dialog glass-card audit-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="audit-reject-confirm-title" initial={{ opacity: 0, y: 18, scale: .96 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 12, scale: .97 }} transition={{ type: 'spring', stiffness: 300, damping: 24 }} onClick={(event) => event.stopPropagation()}>
+              <div className="audit-confirm-icon">↶</div>
+              <h3 id="audit-reject-confirm-title">确认不合并节点？</h3>
+              <p>将放弃右侧差异分支，恢复删除前的处方或修改前的药品数量，并在活动链记录一次“触发更改撤回”。</p>
+              <div className="audit-confirm-summary">
+                <span>待撤回处方</span>
+                <strong>#{pendingChange.prescription_id}</strong>
+                <span>处理结果</span>
+                <strong>恢复本机数据并关闭差异分支</strong>
+              </div>
+              <div className="confirm-actions">
+                <motion.button className="glass-btn glass-btn--primary" disabled={Boolean(action)} whileTap={{ scale: .97 }} onClick={() => { setRejectConfirmOpen(false); onReject(pendingChange.id); }}>确认撤回</motion.button>
+                <button className="glass-btn glass-btn--outline" disabled={Boolean(action)} onClick={() => setRejectConfirmOpen(false)}>取消</button>
               </div>
             </motion.div>
           </motion.div>

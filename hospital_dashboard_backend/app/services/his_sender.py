@@ -812,10 +812,6 @@ class HisSender:
                         self.current_medicine_index = idx
                         current_medicine = self.medicine_list[idx]
 
-                        # 车1 首个药品开始发送 → 记录"前往药房"节点事件
-                        if self.car_id == 1 and idx == 0:
-                            record_event(self.current_prescription_code, "N3_navigate_pharmacy", "car1", "车1前往药房取药")
-
                         medicine_id_check = current_medicine.get("medicine_id", 0)
                         if medicine_id_check == 0 or medicine_id_check is None:
                             continue
@@ -905,15 +901,17 @@ class HisSender:
         tag = self._log_tag()
         if prescription_code != self.current_prescription_code:
             print(f"{tag} [收到] running-started | 处方={prescription_code} | 药品ID={medicine_id} | 处方不匹配，忽略")
-            return
+            return False
 
         if medicine_id == self.expected_medicine_id:
             print(f"{tag} [收到] running-started | 处方={prescription_code} | 药品ID={medicine_id}")
             self.medicine_started[medicine_id] = True
             if self.started_event:
                 self.started_event.set()
+            return True
         else:
             print(f"{tag} [收到] running-started | 处方={prescription_code} | 药品ID={medicine_id} | 药品ID不匹配，忽略")
+            return False
 
     def notify_prescription_step5_return(self, prescription_code: str, medicine_id: int = None):
         tag = self._log_tag()

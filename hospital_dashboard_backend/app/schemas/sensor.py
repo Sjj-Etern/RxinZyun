@@ -23,6 +23,8 @@ class SensorDataRead(SensorDataBase):
 class DHT11DataCreate(BaseModel):
     temp: float
     humi: float
+    # MaxTemperature: float = 40.0
+    # MedName: str = "DHT11"
 
 
 class TemperatureHumidityResponse(BaseModel):

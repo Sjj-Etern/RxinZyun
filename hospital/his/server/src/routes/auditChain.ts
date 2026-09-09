@@ -22,6 +22,71 @@ type SnapshotDiff = { field: string; before: unknown; after: unknown };
 
 const parseJson = <T>(value: string): T => JSON.parse(value) as T;
 
+async function restorePrescriptionSnapshot(conn: any, snapshot: PrescriptionSnapshot) {
+  const prescription = snapshot.prescription as Record<string, any>;
+  const prescriptionId = Number(prescription.id);
+  const [prescriptions] = await conn.query('SELECT id FROM prescriptions WHERE id = ? FOR UPDATE', [prescriptionId]);
+  if (prescriptions.length === 0) {
+    await conn.query(
+      `INSERT INTO prescriptions
+       (id, prescription_code, patient_id, doctor_id, diagnosis, status, note, prescription_type,
+        payment_type, medical_record_no, department, bed_no, total_amount)
+       VALUES (?, ?, ?, ?, ?, 'dispensed', ?, ?, ?, ?, ?, ?, ?)`,
+      [prescriptionId, prescription.prescription_code || null, prescription.patient_id, prescription.doctor_id,
+        prescription.diagnosis, prescription.note || null, prescription.prescription_type || '普通',
+        prescription.payment_type || '医保', prescription.medical_record_no || null, prescription.department || null,
+        prescription.bed_no || null, prescription.total_amount || 0]
+    );
+
+    for (const item of snapshot.items) {
+      await conn.query(
+        `INSERT INTO prescription_items
+         (id, prescription_id, medicine_id, drug_form, dosage, usage_method, frequency, days, quantity, note)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [item.id, prescriptionId, item.medicine_id, item.drug_form || null, item.dosage, item.usage_method || '口服',
+          item.frequency || '每日3次', item.days || 3, item.quantity || 1, item.note || null]
+      );
+      const traceCode = String(item.trace_code || '');
+      if (!traceCode) continue;
+      const [traceRows] = await conn.query('SELECT id FROM medicine_trace_codes WHERE trace_code = ? FOR UPDATE', [traceCode]);
+      let traceCodeId = Number(traceRows[0]?.id || 0);
+      if (!traceCodeId) {
+        const [traceResult] = await conn.query(
+          `INSERT INTO medicine_trace_codes (medicine_id, prescription_id, trace_code, status)
+           VALUES (?, ?, ?, 'scanned_confirm')`,
+          [item.medicine_id, prescriptionId, traceCode]
+        );
+        traceCodeId = Number(traceResult.insertId);
+      }
+      await conn.query(
+        `INSERT INTO prescription_trace_codes (prescription_id, prescription_item_id, medicine_id, trace_code_id)
+         VALUES (?, ?, ?, ?)`,
+        [prescriptionId, item.id, item.medicine_id, traceCodeId]
+      );
+    }
+    return;
+  }
+
+  await conn.query(
+    `UPDATE prescriptions SET prescription_code = ?, patient_id = ?, doctor_id = ?, diagnosis = ?, note = ?,
+     prescription_type = ?, payment_type = ?, medical_record_no = ?, department = ?, bed_no = ?, total_amount = ?
+     WHERE id = ?`,
+    [prescription.prescription_code || null, prescription.patient_id, prescription.doctor_id, prescription.diagnosis,
+      prescription.note || null, prescription.prescription_type || '普通', prescription.payment_type || '医保',
+      prescription.medical_record_no || null, prescription.department || null, prescription.bed_no || null,
+      prescription.total_amount || 0, prescriptionId]
+  );
+  for (const item of snapshot.items) {
+    await conn.query(
+      `UPDATE prescription_items SET medicine_id = ?, drug_form = ?, dosage = ?, usage_method = ?, frequency = ?,
+       days = ?, quantity = ?, note = ? WHERE id = ? AND prescription_id = ?`,
+      [item.medicine_id, item.drug_form || null, item.dosage, item.usage_method || '口服',
+        item.frequency || '每日3次', item.days || 3, item.quantity || 1, item.note || null,
+        item.id, prescriptionId]
+    );
+  }
+}
+
 const diffValues = (before: unknown, after: unknown, path = ''): SnapshotDiff[] => {
   if (JSON.stringify(canonicalize(before)) === JSON.stringify(canonicalize(after))) return [];
   if (Array.isArray(before) && Array.isArray(after)) {
@@ -57,21 +122,13 @@ async function serializeChangeWithBranches(conn: any, row: any) {
   const [baselineRows] = await conn.query(
     `SELECT id, current_hash FROM audit_chain_records
      WHERE entity_type = 'prescription' AND entity_id = ?
-       AND event_type = 'PRESCRIPTION_COMPLETED' AND snapshot_hash = ?
+       AND event_type IN ('NURSE_SCAN_CONFIRMED', 'PRESCRIPTION_COMPLETED') AND snapshot_hash = ?
      ORDER BY id DESC LIMIT 1`,
     [String(row.prescription_id), row.old_snapshot_hash]
   );
   if (!baselineRows.length) return { ...change, baseline_record_id: null, base_continuation_records: [], branch_records: [] };
 
   const baseline = baselineRows[0];
-  const [continuationRows] = await conn.query(
-    `SELECT id, event_type, entity_type, entity_id, trace_code_hash, prescription_hash,
-            operator_hash, flow_status, event_time, payload_hash, previous_hash, current_hash,
-            snapshot_hash, change_id, created_at
-     FROM audit_chain_records WHERE id > ? ORDER BY id ASC`,
-    [baseline.id]
-  );
-
   let previousHash = String(baseline.current_hash);
   const makeBranchRecord = (
     kind: 'change' | 'completion' | 'continuation',
@@ -114,16 +171,12 @@ async function serializeChangeWithBranches(conn: any, row: any) {
   const branchRecords = [
     makeBranchRecord('change', changeEventType, row.detected_at, changedPayloadHash, String(row.prescription_id)),
     makeBranchRecord('completion', 'PRESCRIPTION_COMPLETED', row.detected_at, completionPayloadHash, String(row.prescription_id)),
-    ...continuationRows.map((record: any) => makeBranchRecord(
-      'continuation', record.event_type, record.event_time, record.payload_hash,
-      String(record.entity_id), Number(record.id)
-    )),
   ];
 
   return {
     ...change,
     baseline_record_id: Number(baseline.id),
-    base_continuation_records: continuationRows,
+    base_continuation_records: [],
     branch_records: branchRecords,
   };
 }
@@ -135,7 +188,7 @@ async function inspectCompletedPrescriptions(conn: any, attribution?: Attributio
      JOIN (
        SELECT entity_id, MAX(id) AS max_id
        FROM audit_chain_records
-       WHERE event_type = 'PRESCRIPTION_COMPLETED' AND snapshot_hash IS NOT NULL
+        WHERE event_type IN ('NURSE_SCAN_CONFIRMED', 'PRESCRIPTION_COMPLETED') AND snapshot_hash IS NOT NULL
        GROUP BY entity_id
      ) latest ON latest.max_id = r.id`
   );
@@ -226,7 +279,8 @@ router.get('/', async (req: Request, res: Response) => {
     const [countRows] = await pool.query<any[]>('SELECT COUNT(*) AS total FROM audit_chain_records');
     const [list] = await pool.query(
       `SELECT id, event_type, entity_type, entity_id, trace_code_hash, prescription_hash,
-              operator_hash, flow_status, event_time, payload_hash, previous_hash, current_hash,
+              operator_hash, flow_status, DATE_FORMAT(event_time, '%Y-%m-%d %H:%i:%s') AS event_time,
+              payload_hash, previous_hash, current_hash,
               snapshot_hash, change_id, created_at
        FROM audit_chain_records ORDER BY id DESC LIMIT ? OFFSET ?`,
       [pageSize, offset]
@@ -355,6 +409,59 @@ router.post('/changes/:id/accept', async (req: Request, res: Response) => {
   }
 });
 
+router.post('/changes/:id/reject', async (req: Request, res: Response) => {
+  if (req.user?.role !== 'admin' && req.user?.username !== 'test') {
+    res.status(403).json({ error: '仅管理员或测试账号可以撤回差异分支' });
+    return;
+  }
+  const conn = await pool.getConnection();
+  try {
+    const id = Number(req.params.id);
+    await conn.beginTransaction();
+    const [rows]: any = await conn.query('SELECT * FROM audit_chain_changes WHERE id = ? FOR UPDATE', [id]);
+    if (!rows.length || rows[0].status !== 'pending') {
+      await conn.rollback();
+      res.status(400).json({ error: '该变更不存在或已处理' });
+      return;
+    }
+    const change = rows[0];
+    const [pendingRows] = await conn.query<any[]>(
+      `SELECT id, old_snapshot_json, old_snapshot_hash
+       FROM audit_chain_changes
+       WHERE prescription_id = ? AND status = 'pending'
+       ORDER BY detected_at ASC, id ASC FOR UPDATE`,
+      [change.prescription_id]
+    );
+    const originalChange = pendingRows[0];
+    const snapshot = parseJson<PrescriptionSnapshot>(originalChange.old_snapshot_json);
+    await restorePrescriptionSnapshot(conn, snapshot);
+    const restored = await buildPrescriptionSnapshot(conn, Number(change.prescription_id));
+    const restoredHash = restored ? hash(JSON.stringify(canonicalize(restored))) : null;
+    if (restoredHash !== originalChange.old_snapshot_hash) {
+      throw new Error('本机数据未能完整恢复到变更前状态');
+    }
+    const traceCodes = snapshot.items.map((item) => String(item.trace_code || '')).filter(Boolean);
+    await appendAuditRecord(conn, {
+      eventType: 'DATA_CHANGE_REVERTED', entityType: 'prescription', entityId: change.prescription_id,
+      flowStatus: 'change_reverted', traceCodes, prescriptionId: change.prescription_id,
+      prescriptionCode: change.prescription_code, operatorId: req.user!.id, snapshot, changeId: id,
+    });
+    await conn.query(
+      `UPDATE audit_chain_changes
+       SET status = 'superseded', accepted_at = NOW(), accepted_by = ?
+       WHERE prescription_id = ? AND status = 'pending'`,
+      [req.user!.id, change.prescription_id]
+    );
+    await conn.commit();
+    res.json({ message: '已取消合并并撤回本机数据更改，链上已记录更改撤回' });
+  } catch (err: any) {
+    await conn.rollback();
+    res.status(500).json({ error: '撤回差异分支失败: ' + err.message });
+  } finally {
+    conn.release();
+  }
+});
+
 // 比赛演示入口：admin 与 test 拥有相同的演示权限。
 router.post('/demo/tamper', async (req: Request, res: Response) => {
   const isTestUser = req.user?.username === 'test';
@@ -372,7 +479,7 @@ router.post('/demo/tamper', async (req: Request, res: Response) => {
     if (requestedId) queryParams.push(String(requestedId));
     const [completed]: any = await conn.query(
       `SELECT r.entity_id FROM audit_chain_records r
-       WHERE r.event_type = 'PRESCRIPTION_COMPLETED' AND r.snapshot_hash IS NOT NULL
+       WHERE r.event_type IN ('NURSE_SCAN_CONFIRMED', 'PRESCRIPTION_COMPLETED') AND r.snapshot_hash IS NOT NULL
        ${requestedFilter}
        ORDER BY r.id DESC LIMIT 1`,
       queryParams

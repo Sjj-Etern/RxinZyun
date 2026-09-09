@@ -8,7 +8,7 @@ export type DashboardModuleKey =
   | 'writeoff'
   | 'operationLog'
   | 'medicineDown'
-  | 'restock'
+  | 'prescriptionAnalysis'
   | 'inventory'
   | 'prescriptions';
 
@@ -29,7 +29,7 @@ export const DASHBOARD_MODULES: DashboardModule[] = [
   { key: 'writeoff', to: '/writeoff', label: '配送记录', available: true },
   { key: 'operationLog', to: '/operation-log', label: '可信审计链', available: true },
   { key: 'medicineDown', to: '/medicine-down', label: '药品下架', available: true },
-  { key: 'restock', to: '/restock', label: '补药', available: true },
+  { key: 'prescriptionAnalysis', to: '/prescription-analysis', label: '处方智析', available: true },
   { key: 'inventory', to: '/inventory', label: '库存查询', available: true },
   { key: 'prescriptions', to: '/prescriptions', label: '处方记录', available: true },
 ];

@@ -908,11 +908,6 @@ class RosListener:
                             })
                             await ws.send(pose_subscribe_msg)
 
-                        try:
-                            await asyncio.wait_for(ws.recv(), timeout=3)
-                        except (asyncio.TimeoutError, Exception):
-                            pass
-
                         while True:
                             try:
                                 message = await asyncio.wait_for(

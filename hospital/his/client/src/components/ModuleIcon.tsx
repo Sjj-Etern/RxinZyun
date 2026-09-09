@@ -113,11 +113,13 @@ function renderGlyph(name: Props['name'], accent: string) {
           <path d="M32 18v20M24 31l8 8 8-8" stroke="white" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
         </>
       );
-    case 'restock':
+    case 'prescriptionAnalysis':
       return (
         <>
-          <rect x="16" y="30" width="32" height="14" rx="7" fill={accent} />
-          <path d="M32 22v20M22 32h20" stroke="white" strokeWidth="4" strokeLinecap="round" />
+          <rect x="18" y="16" width="27" height="34" rx="7" fill={accent} />
+          <path d="M25 25h13M25 32h9" stroke="white" strokeWidth="3" strokeLinecap="round" />
+          <path d="M39 39l4 4 8-10" fill="none" stroke={blue} strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" />
+          <circle cx="44" cy="39" r="11" fill="none" stroke={line} strokeWidth="2.5" />
         </>
       );
     case 'inventory':

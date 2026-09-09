@@ -15,6 +15,7 @@ import FaceAuthPage from './pages/FaceAuthPage';
 import DeliveryRecordsPage from './pages/DeliveryRecordsPage';
 import RobotPage from './pages/RobotPage';
 import DispenseManagementPage from './pages/DispenseManagementPage';
+import PrescriptionAnalysisPage from './pages/PrescriptionAnalysisPage';
 import { useAuth } from './hooks/useAuth';
 
 const isMobile = (): boolean => {
@@ -70,7 +71,8 @@ export default function App() {
       <Route path="/writeoff" element={<PrivateRoute><DeliveryRecordsPage /></PrivateRoute>} />
       <Route path="/operation-log" element={<PrivateRoute><BasicModulePage kind="operationLog" title="可信审计链" icon="operationLog" /></PrivateRoute>} />
       <Route path="/medicine-down" element={<PrivateRoute><BasicModulePage kind="medicineDown" title="药品下架" icon="medicineDown" /></PrivateRoute>} />
-      <Route path="/restock" element={<PrivateRoute><BasicModulePage kind="restock" title="补药" icon="restock" /></PrivateRoute>} />
+      <Route path="/prescription-analysis" element={<PrivateRoute><PrescriptionAnalysisPage /></PrivateRoute>} />
+      <Route path="/restock" element={<Navigate to="/prescription-analysis" replace />} />
       <Route path="/inventory" element={<PrivateRoute><BasicModulePage kind="inventory" title="库存查询" icon="inventory" /></PrivateRoute>} />
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
