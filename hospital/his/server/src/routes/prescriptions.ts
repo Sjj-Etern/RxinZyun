@@ -14,6 +14,7 @@ import {
 } from '../services/auditChain';
 import { ensureTestSupport } from '../services/testSupport';
 import { analyzePrescription } from '../services/prescriptionAnalysis';
+import { generatePrescriptionCode } from '../services/prescriptionCodes';
 
 const router = Router();
 router.use(authMiddleware);
@@ -122,46 +123,6 @@ const ensurePrescriptionTraceCodesTable = async (conn: any) => {
   `);
   prescriptionTraceCodesTableReady = true;
 };
-
-// 处方类型编码映射
-const PRESCRIPTION_TYPE_CODES: Record<string, string> = {
-  '普通': '01',
-  '急诊': '02',
-  '儿科': '03',
-  '麻醉精一': '04',
-  '精二': '05',
-};
-
-// 生成处方编号: 类型编码(2) + 日期(8) + 流水号(3) + 校验码(2) = 15位
-// 每天每种处方类型独立编号，确保唯一
-async function generatePrescriptionCode(type: string, conn: any): Promise<string> {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, '0');
-  const d = String(now.getDate()).padStart(2, '0');
-  const dateStr = `${y}${m}${d}`;
-  const typeCode = PRESCRIPTION_TYPE_CODES[type] || '01';
-  const prefix = typeCode + dateStr;
-
-  // 查询当天该类型已有的最大流水号
-  const [rows] = await conn.query(
-    `SELECT MAX(CAST(SUBSTRING(prescription_code, 11, 3) AS UNSIGNED)) as max_seq
-     FROM prescriptions
-     WHERE prescription_code LIKE ?`,
-    [`${prefix}%`]
-  );
-  const maxSeq = rows[0]?.max_seq || 0;
-  const seq = String(maxSeq + 1).padStart(3, '0');
-
-  // 校验码: (前缀 + 流水号)各位数字之和 mod 97
-  const base = prefix + seq;
-  let sum = 0;
-  for (const ch of base) {
-    sum += parseInt(ch, 10);
-  }
-  const checkCode = String(sum % 97).padStart(2, '0');
-  return base + checkCode;
-}
 
 // POST /api/prescriptions — create prescription (doctor only)
 router.post('/', requireRole('doctor', 'admin'), async (req: Request, res: Response) => {

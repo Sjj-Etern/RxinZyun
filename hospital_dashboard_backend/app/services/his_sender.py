@@ -51,14 +51,13 @@ def get_latest_pending_prescription():
                 SELECT prescription_code, id, created_at
                 FROM prescriptions
                 WHERE status = 'approved'
-                ORDER BY created_at DESC
+                ORDER BY created_at DESC, id DESC
                 LIMIT 1
             """)
             result = cursor.fetchone()
 
             if result:
                 prescription_code = result["prescription_code"]
-                print(f"[HIS Sender] 获取到最新处方: {prescription_code}")
                 return prescription_code, result["created_at"]
             else:
                 return None, None
@@ -131,18 +130,17 @@ def get_prescription_medicine_locations(prescription_code: str) -> list:
         with conn.cursor() as cursor:
             sql_query = """
                 SELECT
-                    ml.medicine_id,
+                    pi.medicine_id,
                     MIN(ml.x) as x,
                     MIN(ml.y) as y,
                     MIN(ml.z) as z,
                     MIN(ml.yaw) as yaw
                 FROM prescriptions p
                 JOIN prescription_items pi ON p.id = pi.prescription_id
-                JOIN medicines m ON pi.medicine_id = m.id
-                JOIN medicine_locations ml ON m.name = ml.medicine_name
+                JOIN medicine_locations ml ON pi.medicine_id = ml.medicine_id
                 WHERE p.prescription_code = %s
-                GROUP BY ml.medicine_id
-                ORDER BY ml.medicine_id ASC
+                GROUP BY pi.medicine_id
+                ORDER BY pi.medicine_id ASC
             """
             cursor.execute(sql_query, (prescription_code,))
             results = cursor.fetchall()
@@ -196,6 +194,7 @@ class HisSender:
         # 事件
         self.started_event = None
         self.step5_return_event = None
+        self.medicine_completed_event = None
         self.all_completed_event = None
         self.task_end_event = None
 
@@ -232,6 +231,7 @@ class HisSender:
     def _init_events(self):
         self.started_event = asyncio.Event()
         self.step5_return_event = asyncio.Event()
+        self.medicine_completed_event = asyncio.Event()
         self.all_completed_event = asyncio.Event()
         self.task_end_event = asyncio.Event()
 
@@ -450,6 +450,12 @@ class HisSender:
         try:
             medicine_id = medicine_data["medicine_id"]
             await self._ensure_ws_connection()
+            ack_event = (
+                self.all_completed_event
+                if medicine_index == medicine_total
+                else self.medicine_completed_event
+            )
+            ack_event.clear()
 
             for send_count in range(2):
                 message_dict = {
@@ -472,11 +478,15 @@ class HisSender:
                 print(f"{tag} [发送] end | 处方={prescription_code} | 药品ID={medicine_id}")
 
                 await self.ws_connection.send(message)
+                try:
+                    await asyncio.wait_for(ack_event.wait(), timeout=SEND_INTERVAL)
+                    return True
+                except asyncio.TimeoutError:
+                    if send_count == 0:
+                        print(f"{tag} [超时] 未收到 end 回执，重发一次")
 
-                if send_count == 0:
-                    await asyncio.sleep(SEND_INTERVAL)
-
-            return True
+            print(f"{tag} [错误] end 重发后仍未收到回执")
+            return False
 
         except Exception as e:
             print(f"{tag} 发送 end 消息失败: {e}")
@@ -604,8 +614,7 @@ class HisSender:
             check_count += 1
             if prescription_code and check_count % 30 == 0:
                 if not check_prescription_exists(prescription_code):
-                    print(f"{tag} [STOP] 处方 {prescription_code} 已从数据库删除，停止静默等待")
-                    self.sender_running = False
+                    print(f"{tag} [停止] 处方 {prescription_code} 已删除，结束本次任务")
                     return False
             now = time.time()
             if now - last_beat >= 30:
@@ -637,10 +646,8 @@ class HisSender:
             if send_count > 0 and send_count % PRESCRIPTION_CHECK_INTERVAL == 0:
                 if not check_prescription_exists(prescription_code):
                     print(f"{tag} [停止] 处方{prescription_code}已删除，停止发送start")
-                    self.sender_running = False
                     return False
             send_count += 1
-            print(f"{tag} 发送 start（第{send_count}次）")
             await self.send_medicine_to_ros(
                 prescription_code, medicine_data, medicine_index, medicine_total, "start"
             )
@@ -674,7 +681,6 @@ class HisSender:
             if send_count > 0 and send_count % PRESCRIPTION_CHECK_INTERVAL == 0:
                 if not check_prescription_exists(prescription_code):
                     print(f"{tag} [停止] 处方{prescription_code}已删除，停止发送running")
-                    self.sender_running = False
                     return False
             send_count += 1
             await self.send_medicine_to_ros(
@@ -705,9 +711,6 @@ class HisSender:
         if not success:
             print(f"{tag} [错误] end 消息发送失败")
             return False
-
-        # 阶段4：等待3秒
-        await asyncio.sleep(3)
 
         return True
 
@@ -867,6 +870,8 @@ class HisSender:
             self.started_event.set()
         if self.step5_return_event:
             self.step5_return_event.set()
+        if self.medicine_completed_event:
+            self.medicine_completed_event.set()
         if self.all_completed_event:
             self.all_completed_event.set()
         if self.task_end_event:
@@ -929,7 +934,17 @@ class HisSender:
 
     def notify_medicine_completed(self, medicine_id: int, prescription_code: str):
         tag = self._log_tag()
+        if prescription_code != self.current_prescription_code:
+            print(f"{tag} [收到] end | 处方={prescription_code} | 处方不匹配，忽略")
+            return False
+        if medicine_id != self.expected_medicine_id:
+            print(f"{tag} [收到] end | 处方={prescription_code} | 药品ID={medicine_id} | 药品ID不匹配，忽略")
+            return False
+
         print(f"{tag} [收到] end | 处方={prescription_code} | 药品ID={medicine_id}")
+        if self.medicine_completed_event:
+            self.medicine_completed_event.set()
+        return True
 
     def notify_all_medicines_completed(self, prescription_code: str):
         tag = self._log_tag()

@@ -593,14 +593,18 @@ class RosListener:
                 if not self.audio_state["car_can_go_triggered"]:
                     print(f"{tag} 触发语音播报：单子开始（car_can_go）")
                     try:
+                        played = True
                         for i in range(settings.audio_start_play_count):
                             if i > 0:
-                                print(f"{tag} 等待{settings.audio_start_play_interval}秒...")
                                 await asyncio.sleep(settings.audio_start_play_interval)
-                            print(f"{tag} 播放 audio_id={settings.audio_id_start} (car_can_go) - 第{i+1}次")
-                            await play_audio_async(settings.audio_id_start)
-                        self.audio_state["car_can_go_triggered"] = True
-                        print(f"{tag} 语音播报成功：car_can_go")
+                            if not await play_audio_async(settings.audio_id_start):
+                                played = False
+                                break
+                        if played:
+                            self.audio_state["car_can_go_triggered"] = True
+                            print(f"{tag} 语音播报成功：car_can_go")
+                        else:
+                            print(f"{tag} 语音播报未完成，等待下次状态消息重试")
                     except Exception as audio_err:
                         logger.error(f"语音播报失败: {audio_err}")
                         print(f"{tag} 语音播报失败: {audio_err}")
@@ -619,14 +623,18 @@ class RosListener:
                 if not self.audio_state["car_already_arrive_triggered"]:
                     print(f"{tag} 触发语音播报：取药车完成（收到 all_completed）")
                     try:
+                        played = True
                         for i in range(settings.audio_pickup_done_play_count):
                             if i > 0:
-                                print(f"{tag} 等待{settings.audio_pickup_done_play_interval}秒...")
                                 await asyncio.sleep(settings.audio_pickup_done_play_interval)
-                            print(f"{tag} 播放 audio_id={settings.audio_id_pickup_done} (pickup_done) - 第{i+1}次")
-                            await play_audio_async(settings.audio_id_pickup_done)
-                        self.audio_state["car_already_arrive_triggered"] = True
-                        print(f"{tag} 语音播报成功：pickup_done")
+                            if not await play_audio_async(settings.audio_id_pickup_done):
+                                played = False
+                                break
+                        if played:
+                            self.audio_state["car_already_arrive_triggered"] = True
+                            print(f"{tag} 语音播报成功：pickup_done")
+                        else:
+                            print(f"{tag} 语音播报未完成，等待下次状态消息重试")
                     except Exception as audio_err:
                         logger.error(f"语音播报失败: {audio_err}")
                         print(f"{tag} 语音播报失败: {audio_err}")
@@ -640,15 +648,19 @@ class RosListener:
                 if not self.audio_state["nurse_arrive_audio_triggered"]:
                     print(f"{tag} 触发语音播报：送药车完成（收到 nurse_arrive）")
                     try:
+                        played = True
                         for i in range(settings.audio_delivered_play_count):
                             if i > 0:
-                                print(f"{tag} 等待{settings.audio_delivered_play_interval}秒...")
                                 await asyncio.sleep(settings.audio_delivered_play_interval)
-                            print(f"{tag} 播放 audio_id={settings.audio_id_delivered} (delivered) - 第{i+1}次")
-                            await play_audio_async(settings.audio_id_delivered)
-                        self.audio_state["nurse_arrive_audio_triggered"] = True
-                        record_event(prescription_code, "N14_voice_broadcast", "car2", "已播报\"药物已送达，请您确认\"")
-                        print(f"{tag} 语音播报成功：delivered")
+                            if not await play_audio_async(settings.audio_id_delivered):
+                                played = False
+                                break
+                        if played:
+                            self.audio_state["nurse_arrive_audio_triggered"] = True
+                            record_event(prescription_code, "N14_voice_broadcast", "car2", "已播报\"药物已送达，请您确认\"")
+                            print(f"{tag} 语音播报成功：delivered")
+                        else:
+                            print(f"{tag} 语音播报未完成，等待下次状态消息重试")
                     except Exception as audio_err:
                         logger.error(f"语音播报失败: {audio_err}")
                         print(f"{tag} 语音播报失败: {audio_err}")

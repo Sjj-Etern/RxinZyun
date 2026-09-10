@@ -1,8 +1,8 @@
-fastapi
-uvicorn[standard]
-opencv-python
-sqlalchemy
-pydantic-settings
-websockets
-pymysql
-requests
+fastapi==0.135.4
+uvicorn[standard]==0.40.0
+opencv-python-headless==4.13.0.92
+sqlalchemy==2.0.50
+pydantic-settings==2.12.0
+websockets==15.0.1
+pymysql==1.2.0
+requests==2.34.2

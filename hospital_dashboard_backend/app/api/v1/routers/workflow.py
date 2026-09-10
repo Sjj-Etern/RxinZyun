@@ -397,11 +397,6 @@ async def trigger_pharmacist_success(prescription_code: str = Body(..., embed=Tr
     判断依据：节点3扫码结束（处方所有追溯码已扫到出库状态），由 HIS 扫码端点检测并 HTTP 通知本接口。
     延迟时间通过 .env 的 PHARMACIST_SUCCESS_DELAY 统一配置（秒），设为 0 表示无延迟。
     """
-    from app.services.his_sender import _senders as his_senders
-    car2_sender = his_senders.get(2)
-    if not car2_sender:
-        raise HTTPException(status_code=503, detail="车2发送服务未启动")
-
     # 幂等去重：同一处方只触发一次，避免重复扫码/并发通知导致重复发送
     if prescription_code in _triggered_pharmacist_success:
         print(f"[pharmacist-success-trigger] 处方 {prescription_code} 已触发过，跳过")
@@ -428,8 +423,18 @@ async def trigger_pharmacist_success(prescription_code: str = Body(..., embed=Tr
             record_event(prescription_code, _key, "system", _detail)
     record_event(prescription_code, "N5_scanned_outbound", "his", "药师扫码出库完成")
 
-    await car2_sender.send_pharmacist_success(0, prescription_code)
-    record_event(prescription_code, "N6_task_dispatched", "system", "跨梯运输任务已下发车2")
+    from app.services.his_sender import _senders as his_senders
+    car2_sender = his_senders.get(2)
+    if not car2_sender:
+        _triggered_pharmacist_success.discard(prescription_code)
+        raise HTTPException(status_code=503, detail="扫码成功并已记录N5，但车2发送服务未启动，N6尚未下发")
+
+    try:
+        await car2_sender.send_pharmacist_success(0, prescription_code)
+        record_event(prescription_code, "N6_task_dispatched", "system", "跨梯运输任务已下发车2")
+    except Exception:
+        _triggered_pharmacist_success.discard(prescription_code)
+        raise
 
     # 车1：同一触发点发送同样的 pharmacist-success 信号（内容/格式与车2 完全一致）
     car1_sender = his_senders.get(1)

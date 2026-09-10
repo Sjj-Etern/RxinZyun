@@ -15,6 +15,7 @@ import { config } from './config';
 import pool from './db';
 import { ensureAuditChainTable } from './services/auditChain';
 import { ensureTestSupport } from './services/testSupport';
+import { ensurePrescriptionCodeSchema } from './services/prescriptionCodes';
 const app = express();
 
 // Middleware
@@ -41,6 +42,7 @@ app.use('/api/delivery-records', deliveryRecordRoutes);
 // 先完成审计表迁移，避免首个扫码事务中执行 DDL 导致隐式提交。
 async function startServer() {
   await ensureAuditChainTable(pool);
+  await ensurePrescriptionCodeSchema(pool);
   await ensureTestSupport(pool);
   app.listen(config.server.port, config.server.host, () => {
     console.log(`🚀 服务器已启动: http://${config.server.host}:${config.server.port}`);

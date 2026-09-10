@@ -184,33 +184,48 @@ const findTraceCodeByInputForUpdate = async (conn: any, traceCodeInput: unknown)
 // 通知调度后端；追溯码本身的扫码校验与状态写入由硬件工程师负责。
 // 节点3扫码复核完成后通知医院大屏后端，触发车2继续配送。
 // 节点3对应所有追溯码第一次实际扫码完成（判定含 scanned_outbound 与 scanned_confirm，防重复扫码破坏计数）。
-function notifyBackendNode3Completed(prescriptionCode: string): void {
+async function notifyBackendNode3Completed(prescriptionCode: string): Promise<void> {
   const base = config.services.hospitalBackendUrl;
   const target = new URL(`${base}/workflow/pharmacist-success-trigger`);
   const body = JSON.stringify({ prescription_code: prescriptionCode });
   const transport = target.protocol === 'https:' ? https : http;
-  const req = transport.request({
-    hostname: target.hostname,
-    port: Number(target.port) || (target.protocol === 'https:' ? 443 : 80),
-    path: target.pathname + target.search,
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
-    timeout: config.services.hospitalBackendTimeoutMs,
-  }, (response) => {
-    let raw = '';
-    response.setEncoding('utf8');
-    response.on('data', (chunk) => { raw += chunk; });
-    response.on('end', () => {
-      console.log(`[节点3完成通知] 大屏后端响应 ${response.statusCode}: ${raw}`);
-    });
-  });
-  req.on('error', (error) => console.error(`[节点3完成通知] 通知大屏后端失败: ${error.message}`));
-  req.on('timeout', () => {
-    req.destroy();
-    console.error('[节点3完成通知] 通知大屏后端超时');
-  });
-  req.write(body);
-  req.end();
+
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const req = transport.request({
+          hostname: target.hostname,
+          port: Number(target.port) || (target.protocol === 'https:' ? 443 : 80),
+          path: target.pathname + target.search,
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+          timeout: config.services.hospitalBackendTimeoutMs,
+        }, (response) => {
+          let raw = '';
+          response.setEncoding('utf8');
+          response.on('data', (chunk) => { raw += chunk; });
+          response.on('end', () => {
+            const statusCode = response.statusCode || 0;
+            if (statusCode >= 200 && statusCode < 300) {
+              console.log(`[节点3完成通知] 大屏后端响应 ${statusCode}: ${raw}`);
+              resolve();
+              return;
+            }
+            reject(new Error(`大屏后端响应 ${statusCode}: ${raw}`));
+          });
+        });
+        req.on('error', reject);
+        req.on('timeout', () => req.destroy(new Error('通知大屏后端超时')));
+        req.write(body);
+        req.end();
+      });
+      return;
+    } catch (error: any) {
+      console.error(`[节点3完成通知] 第${attempt}次失败: ${error.message}`);
+      if (attempt === 3) throw error;
+      await new Promise((resolve) => setTimeout(resolve, attempt * 500));
+    }
+  }
 }
 
 // 扫码进度通知：每次出库扫码后向大屏后端推送进度（已扫第几个/共几个），供大屏 N5 节点实时显示
@@ -303,7 +318,7 @@ async function checkNode3CompletedAndNotify(conn: any, prescriptionId: number | 
     if (!prescriptionCode) return;
 
     console.log(`[节点3完成] 处方 ${prescriptionCode} 全部追溯码已完成第一次扫码（${total} 条），通知大屏后端`);
-    notifyBackendNode3Completed(prescriptionCode);
+    await notifyBackendNode3Completed(prescriptionCode);
   } catch (error: any) {
     // 回调失败不回滚已完成的扫码，避免大屏暂时不可用阻塞 HIS。
     console.error(`[节点3完成] 检查或通知失败: ${error.message}`);
