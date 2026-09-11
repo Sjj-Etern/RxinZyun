@@ -524,8 +524,8 @@ async def trigger_nurse_success(prescription_code: str = Body(..., embed=True)):
 
     判断依据：节点4扫码结束（处方所有追溯码均已扫到确认状态 scanned_confirm，
     即每个药品完成第二次扫码），由 HIS 扫码端点检测并 HTTP 通知本接口。
-    触发方式：唤醒车2 listener 的护士到达事件 → 停止 lift-open 连发 → Step8 发送
-    nurse-success（发3次自动停）。延迟时间通过 .env 的 NURSE_SUCCESS_DELAY 配置。
+    触发方式：唤醒车2 listener 的护士到达事件 → 若 lift-open 尚未发满3次则提前停止
+    → Step8 发送 nurse-success（发3次自动停）。延迟时间通过 .env 的 NURSE_SUCCESS_DELAY 配置。
     """
     from app.services.his_sender import _senders as his_senders
     from app.services.ros_listener import get_listener

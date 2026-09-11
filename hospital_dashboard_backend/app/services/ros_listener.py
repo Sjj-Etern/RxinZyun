@@ -412,6 +412,7 @@ class RosListener:
         self.audio_state: Dict[str, Any] = {
             "car_can_go_triggered": False,
             "car_already_arrive_triggered": False,
+            "pickup_done_audio_pending": False,
             "nurse_arrive_audio_triggered": False,
             "current_prescription_code": None,
         }
@@ -587,6 +588,7 @@ class RosListener:
                     self.audio_state["current_prescription_code"] = prescription_code
                     self.audio_state["car_can_go_triggered"] = False
                     self.audio_state["car_already_arrive_triggered"] = False
+                    self.audio_state["pickup_done_audio_pending"] = False
                     self.audio_state["nurse_arrive_audio_triggered"] = False
                     print(f"{tag} 新单子开始，重置语音播报状态")
 
@@ -620,9 +622,15 @@ class RosListener:
 
         elif status == "all_completed":
             if prescription_code:
-                if not self.audio_state["car_already_arrive_triggered"]:
+                if (not self.audio_state["car_already_arrive_triggered"]
+                        and not self.audio_state["pickup_done_audio_pending"]):
+                    self.audio_state["pickup_done_audio_pending"] = True
                     print(f"{tag} 触发语音播报：取药车完成（收到 all_completed）")
                     try:
+                        delay = settings.audio_pickup_done_delay
+                        if delay > 0:
+                            print(f"{tag} 取药完成语音延迟 {delay} 秒播放")
+                            await asyncio.sleep(delay)
                         played = True
                         for i in range(settings.audio_pickup_done_play_count):
                             if i > 0:
@@ -638,8 +646,10 @@ class RosListener:
                     except Exception as audio_err:
                         logger.error(f"语音播报失败: {audio_err}")
                         print(f"{tag} 语音播报失败: {audio_err}")
+                    finally:
+                        self.audio_state["pickup_done_audio_pending"] = False
                 else:
-                    print(f"{tag} pickup_done 已触发过，不重复播放")
+                    print(f"{tag} pickup_done 已在等待播放或已触发，不重复播放")
 
         elif status == "nurse_arrive":
             # 车2到达护士站 → 播报"药物已送达，请您确认"（每处方1轮）
@@ -845,7 +855,7 @@ class RosListener:
                 # Step 7: 等待护士到达信号
                 await self._nurse_arrive_event.wait()
 
-                # 收到 nurse_arrive → 立即停止 ⑤ lift-open 连续发送
+                # 护士确认可能早于第3次发送；此时提前停止剩余 lift-open
                 await car2_sender.stop_current_signal()
 
                 # Step 8: 通知车2 护士确认

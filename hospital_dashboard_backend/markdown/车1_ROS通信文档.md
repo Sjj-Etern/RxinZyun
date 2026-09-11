@@ -180,7 +180,7 @@ ORDER BY created_at DESC LIMIT 1
 |------|---------|---------|
 | `{id}_{code}_running-started` | 双重校验通过 → 置 started 事件，解锁阶段2 | N2 任务确认 + 语音 car_can_go |
 | `{id}_{code}_running-step5-waiting-end` | 双重校验通过 → 置 step5 事件，解锁阶段3（发 end） | — |
-| `{code}_all_completed`（**无 medicine_id 前缀**） | 处方码匹配 → 置 all_completed + task_completed，停止发送；连播2次语音 | N4 所有药品已抓取 + 语音 |
+| `{code}_all_completed`（**无 medicine_id 前缀**） | 处方码匹配 → 置 all_completed + task_completed，停止发送；延迟 `AUDIO_PICKUP_DONE_DELAY` 后按配置播放语音 | N4 所有药品已抓取 + 语音 |
 | `{id}_{code}_end` | 仅记日志（顺序结构由 for 循环切换） | — |
 | `{code}_end`（药单级，无 id） | 置 task_end 事件 + **HIS 处方状态 → dispensed**（[update_his_prescription_status](../app/services/ros_listener.py#L196-L233)） | — |
 
@@ -248,7 +248,7 @@ ORDER BY created_at DESC LIMIT 1
 | 失败退出 | 任一药品任一阶段失败（发送异常）→ `break` 退出 for 循环，本处方处理终止，回到主循环 |
 | medicine_id=0/NULL | 该药品直接 `continue` 跳过（不发送、不算失败） |
 
-**结束条件**：车1 在最后一个药品 end 后上报 `{code}_arm_end`（机械臂流程结束，N4→N5 切换）、`{code}_all_completed`（所有药品抓取完，触发语音+停止发送）和 `{code}_end`（药单级，HIS 处方置 `dispensed`，任务彻底完成）。
+**结束条件**：车1 在最后一个药品 end 后上报 `{code}_arm_end`（机械臂流程结束，N4→N5 切换）、`{code}_all_completed`（所有药品抓取完，停止发送并延迟播放完成语音）和 `{code}_end`（药单级，HIS 处方置 `dispensed`，任务彻底完成）。
 
 ---
 
@@ -261,7 +261,7 @@ ORDER BY created_at DESC LIMIT 1
 | 阶段3 | 系统 → 车1 | `end`（含坐标） | 固定 2 次 | 不等回执 |
 | 阶段4 | — | 等 3 秒 | 固定 | — |
 | 收尾 | 车1 → 系统 | `{code}_arm_end` | 单次 | N4 完成 + N5 进行中 |
-| 收尾 | 车1 → 系统 | `{code}_all_completed` | 单次 | 停止发送 + 语音×2 |
+| 收尾 | 车1 → 系统 | `{code}_all_completed` | 单次 | 停止发送 + 延迟后按配置播放语音 |
 | 收尾 | 车1 → 系统 | `{code}_end` | 单次 | HIS 处方 → dispensed |
 | **扫码完成** | **系统 → 车1** | **`pharmacist-success`（start 同构格式）** | **单发（失败重试最多 3 次）** | **HIS 节点3 全部扫码完成（pharmacist-success-trigger）** |
 

@@ -26,7 +26,7 @@
 
 ### 3.1 信号总览
 
-4 个系统 → 车2 信号均为**连续发送**模式：每 `CAR2_SIGNAL_INTERVAL=2` 秒重发一次，直到收到对应回执（回执驱动停止）或被下一个信号切换。**系统侧无超时保护**。
+系统 → 车2 信号每 `CAR2_SIGNAL_INTERVAL=2` 秒重发一次。`pharmacist-success`、`lift-across` 由回执或信号切换停止；没有直接接收回执的 `lift-open`、`nurse-success` 最多发送 3 次，避免无限发送。
 
 ```
 ① 系统 → 车2:  {prescription_code}_pharmacist-success   连发，收到 lift-arrive 停
@@ -36,7 +36,7 @@
 ⑤ 电梯硬件:    关门 → 查层 → go_floor（去目标楼层）
 ⑥ ESP32 → 系统: {"type":"floor_arrived","floor":4}      楼层真实到达上报（20s 超时兜底）
 ⑥′ 电梯硬件:   到达4楼后再次 open_door（到站开门，车2 出梯用）
-⑦ 系统 → 车2:  {prescription_code}_lift-open             连发，HIS 节点4 扫码确认后停
+⑦ 系统 → 车2:  {prescription_code}_lift-open             最多3次，提前扫码时立即停
 ⑧ 车2 → 系统:  {prescription_code}_nurse_arrive
 ⑨ 系统 → 车2:  {prescription_code}_nurse-success         固定发 3 次自动停
 ```
@@ -54,9 +54,9 @@
 | Step 4 | 电梯关门（TCP `close_door`，等 ACK + `ELEVATOR_DOOR_CLOSE_DELAY=3` 秒） | N10 电梯关门 |
 | Step 5 | 查询当前楼层（同层跳过）→ `go_floor`（目标 `ELEVATOR_TARGET_FLOOR=4`）→ 等 ESP32 上报 `floor_arrived`（兜底 `ELEVATOR_FLOOR_ARRIVE_TIMEOUT=20` 秒） | N11 楼层到达 |
 | Step 5.5 | **到达目标楼层后电梯开门**（TCP `open_door`，等 ACK + `ELEVATOR_DOOR_OPEN_DELAY=3` 秒，确保门已打开再放车2 出梯） | N12 开门送出（流水） |
-| Step 6 | 启动 ⑦ lift-open 连发（开门完成后立即发送） | N12 开门送出 |
+| Step 6 | 启动 ⑦ lift-open 限次发送（开门完成后立即发送，最多 3 次） | N12 开门送出 |
 | Step 7 | 等待 HIS 节点4 扫码确认（`nurse-success-trigger` API 调用 `trigger_nurse_arrive_event()` 解锁；车2 `nurse_arrive` 消息仅触发语音播报，**不**解锁此步骤） | N14 语音播报 |
-| Step 8 | 停止 ⑦ lift-open → 启动 ⑨ nurse-success（发 3 次停） | N15 任务完成 |
+| Step 8 | 若 ⑦ lift-open 尚未发完则提前停止 → 启动 ⑨ nurse-success（发 3 次停） | N15 任务完成 |
 
 ---
 
@@ -118,11 +118,11 @@
 
 ---
 
-### ⑤ lift-open（系统 → 车2，连发）
+### ⑤ lift-open（系统 → 车2，最多 3 次）
 
 **触发**：电梯真实到达目标楼层（收到 ESP32 `floor_arrived` 上报或 20s 兜底超时）→ **先执行到站开门**（TCP `open_door` + 等 `ELEVATOR_DOOR_OPEN_DELAY` 秒，见编排 Step 5.5）→ 门开后立即发送。
 
-**停止**：HIS 节点4 扫码确认 API 触发 `trigger_nurse_arrive_event()` → Step 7 解锁 → Step 8 停止（**非**车2 `nurse_arrive` 消息触发）。
+**停止**：发送满 3 次后自动停止；如果 HIS 节点4扫码确认 API 更早触发 `trigger_nurse_arrive_event()`，Step 7 解锁并提前停止剩余发送。车2 `nurse_arrive` 消息不负责停止。
 
 **发送格式**：
 
@@ -198,7 +198,7 @@
 | ④ | — | 延迟 `ELEVATOR_ACROSS_TO_GO_FLOOR_DELAY` 秒 | — | — |
 | ⑤ | ESP32 → 系统 | `{"type":"floor_arrived","floor":4}` | 单次 | 20s 兜底超时 |
 | ⑥′ | 系统 → ESP32 | `{"cmd":"open_door"}` 到站开门 | 单次 | 等 `ELEVATOR_DOOR_OPEN_DELAY` 秒后放行 lift-open |
-| ⑥ | 系统 → 车2 | `{prescription_code}_lift-open` | 连发（2s/次） | HIS 节点4 扫码确认 → trigger_nurse_arrive_event() |
+| ⑥ | 系统 → 车2 | `{prescription_code}_lift-open` | 最多 3 次（2s/次） | 发满 3 次；HIS 节点4提前扫码时立即停 |
 | ⑦ | 车2 → 系统 | `{prescription_code}_nurse_arrive` | 单次 | —（仅触发语音+N14，不解锁 Step 7） |
 | ⑧ | 系统 → 车2 | `{prescription_code}_nurse-success` | 固定 3 次 | 发满 3 次自动停 |
 

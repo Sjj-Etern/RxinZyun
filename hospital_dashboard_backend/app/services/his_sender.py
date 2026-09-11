@@ -223,7 +223,7 @@ class HisSender:
         self.expected_medicine_id = None
         self.expected_prescription_code = None
 
-        # 车2 信号连续发送状态（pharmacist-success / lift-across / lift-open / nurse-success）
+        # 车2 信号发送状态（pharmacist-success / lift-across 连发；lift-open / nurse-success 限次发送）
         self._continuous_send_task: Optional[asyncio.Task] = None
         self._continuous_stop_event: Optional[asyncio.Event] = None
         self._continuous_signal_name: Optional[str] = None
@@ -294,10 +294,9 @@ class HisSender:
             return False
 
     # ===== 车2 信号连续发送 =====
-    # 4 个车2 信号（pharmacist-success / lift-across / lift-open / nurse-success）
-    # 均改为连续发送：每 car2_signal_interval 秒重发一次，
-    # 直到被 stop_current_signal()（收到对应回执）或下一个信号启动（信号改变）停止。
-    # nurse-success 是末位信号，无对应回执，发送 3 次后自动停止。
+    # 4 个车2信号共用发送循环，每 car2_signal_interval 秒重发一次。
+    # pharmacist-success / lift-across 由回执或信号切换停止；
+    # lift-open / nurse-success 无直接回执，最多发送 3 次，避免等待人工扫码期间无限发送。
 
     async def _publish_signal_once(self, message: str, msg_fields: Optional[dict] = None) -> bool:
         """发送一次信号。
@@ -538,11 +537,11 @@ class HisSender:
         await self._start_continuous_send("lift-across", message, max_sends=None)
 
     async def send_lift_open(self, prescription_code: str):
-        """启动 lift-open 连续发送（延迟后调用；启动时自动停③，收到 nurse_arrive 后由调用方停本信号）"""
+        """发送 lift-open 3 次（到站开门后调用；启动时自动停止 lift-across）"""
         tag = self._log_tag()
         message = f"{prescription_code}_lift-open"
         print(f"{tag} [发送] lift-open | 处方={prescription_code}")
-        await self._start_continuous_send("lift-open", message, max_sends=None)
+        await self._start_continuous_send("lift-open", message, max_sends=3)
 
     async def send_nurse_success(self, prescription_code: str):
         """启动 nurse-success 连续发送（收到 nurse_arrive 后调用；末位信号，发 3 次自动停）"""

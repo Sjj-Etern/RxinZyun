@@ -80,6 +80,7 @@ class Settings(BaseSettings):
 
     # 取药车完成语音（all_completed触发）
     audio_id_pickup_done: int = 14
+    audio_pickup_done_delay: float = 5
     audio_pickup_done_play_count: int = 1
     audio_pickup_done_play_interval: int = 2
 
