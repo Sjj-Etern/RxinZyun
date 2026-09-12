@@ -86,7 +86,6 @@ function notifyBackendPrescriptionDeleted(prescriptionCodes: string[]): void {
 
 type PrescriptionItemPayload = {
   medicine_id?: number;
-  trace_code?: string;
   drug_form?: string;
   dosage?: string;
   usage_method?: string;
@@ -141,11 +140,14 @@ router.post('/', requireRole('doctor', 'admin'), async (req: Request, res: Respo
     }
 
     const seenMedicineIds = new Set<number>();
-    const seenTraceCodes = new Set<string>();
     for (const item of items as PrescriptionItemPayload[]) {
-      const traceCode = String(item.trace_code || '').trim();
-      if (!item.medicine_id || !item.dosage || !traceCode) {
-        res.status(400).json({ error: '每个药品都必须填写药品、用量和追溯码' });
+      if (!item.medicine_id || !item.dosage) {
+        res.status(400).json({ error: '每个药品都必须填写药品和用量' });
+        return;
+      }
+      const quantity = Number(item.quantity || 1);
+      if (!Number.isInteger(quantity) || quantity <= 0) {
+        res.status(400).json({ error: '药品数量必须是正整数' });
         return;
       }
       const medicineId = Number(item.medicine_id);
@@ -153,50 +155,28 @@ router.post('/', requireRole('doctor', 'admin'), async (req: Request, res: Respo
         res.status(400).json({ error: '每张处方的药品不能重复' });
         return;
       }
-      if (seenTraceCodes.has(traceCode)) {
-        res.status(400).json({ error: `追溯码不能重复: ${traceCode}` });
-        return;
-      }
       seenMedicineIds.add(medicineId);
-      seenTraceCodes.add(traceCode);
     }
 
     let totalAmount = 0;
-    const resolvedItems: Array<PrescriptionItemPayload & { trace_code: string; trace_code_id: number }> = [];
+    const resolvedItems: PrescriptionItemPayload[] = [];
 
     await ensurePrescriptionTraceCodesTable(conn);
     await ensureAuditChainTable(conn);
     await conn.beginTransaction();
 
     for (const item of items as PrescriptionItemPayload[]) {
-      const traceCode = String(item.trace_code || '').trim();
-      const [traceRows] = await conn.query<any[]>(
-        `SELECT tc.id AS trace_code_id, tc.medicine_id, tc.prescription_id, tc.status,
-                tc.scan1_time, tc.scan2_time, tc.scan3_time, m.name AS medicine_name, m.price
-         FROM medicine_trace_codes tc
-         JOIN medicines m ON tc.medicine_id = m.id
-         WHERE tc.trace_code = ?
-         FOR UPDATE`,
-        [traceCode]
+      const [medicineRows] = await conn.query<any[]>(
+        'SELECT id, name, price FROM medicines WHERE id = ? FOR UPDATE',
+        [item.medicine_id]
       );
 
-      if (traceRows.length === 0) {
-        throw httpError(400, `追溯码不存在: ${traceCode}`);
+      if (medicineRows.length === 0) {
+        throw httpError(400, `药品不存在: ${item.medicine_id}`);
       }
 
-      const trace = traceRows[0];
-      if (Number(trace.medicine_id) !== Number(item.medicine_id)) {
-        throw httpError(400, `追溯码 ${traceCode} 不属于所选药品`);
-      }
-      if (trace.prescription_id) {
-        throw httpError(400, `追溯码 ${traceCode} 已关联其他处方`);
-      }
-      if (trace.status !== 'pending' || trace.scan1_time || trace.scan2_time || trace.scan3_time) {
-        throw httpError(400, `追溯码 ${traceCode} 已被扫描，不能用于新处方`);
-      }
-
-      totalAmount += Number(trace.price) * (item.quantity || 1);
-      resolvedItems.push({ ...item, trace_code: traceCode, trace_code_id: trace.trace_code_id });
+      totalAmount += Number(medicineRows[0].price) * (item.quantity || 1);
+      resolvedItems.push(item);
     }
 
     const prescriptionType = prescription_type || '普通';
@@ -213,7 +193,7 @@ router.post('/', requireRole('doctor', 'admin'), async (req: Request, res: Respo
     const prescriptionId = (prescResult as any).insertId;
 
     for (const item of resolvedItems) {
-      const [itemResult] = await conn.query(
+      await conn.query(
         `INSERT INTO prescription_items (prescription_id, medicine_id, drug_form, dosage, usage_method, frequency, days, quantity, note)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
@@ -221,17 +201,6 @@ router.post('/', requireRole('doctor', 'admin'), async (req: Request, res: Respo
           item.dosage, item.usage_method || '口服', item.frequency || '每日3次',
           item.days || 3, item.quantity || 1, item.note || null,
         ]
-      );
-      const prescriptionItemId = (itemResult as any).insertId;
-
-      await conn.query(
-        'UPDATE medicine_trace_codes SET prescription_id = ? WHERE id = ?',
-        [prescriptionId, item.trace_code_id]
-      );
-      await conn.query(
-        `INSERT INTO prescription_trace_codes (prescription_id, prescription_item_id, medicine_id, trace_code_id)
-         VALUES (?, ?, ?, ?)`,
-        [prescriptionId, prescriptionItemId, item.medicine_id, item.trace_code_id]
       );
     }
 
@@ -242,7 +211,6 @@ router.post('/', requireRole('doctor', 'admin'), async (req: Request, res: Respo
       entityType: 'prescription',
       entityId: prescriptionId,
       flowStatus: 'prescription_created',
-      traceCodes: resolvedItems.map((item) => item.trace_code),
       prescriptionId,
       prescriptionCode,
       operatorId: req.user!.id,
@@ -319,6 +287,40 @@ router.get('/', async (req: Request, res: Response) => {
   }
 });
 
+// GET /api/prescriptions/scan-ready — prescriptions still awaiting outbound or nurse scans
+router.get('/scan-ready', async (req: Request, res: Response) => {
+  try {
+    await ensurePrescriptionTraceCodesTable(pool);
+    const conditions = ["p.status IN ('approved', 'dispensed')"];
+    const params: any[] = [];
+    if (req.user!.role === 'doctor') {
+      conditions.push('p.doctor_id = ?');
+      params.push(req.user!.id);
+    }
+
+    const [list] = await pool.query<any[]>(
+      `SELECT p.*, pt.name AS patient_name, u.real_name AS doctor_name
+       FROM prescriptions p
+       LEFT JOIN patients pt ON p.patient_id = pt.id
+       LEFT JOIN users u ON p.doctor_id = u.id
+       WHERE ${conditions.join(' AND ')}
+         AND (SELECT COALESCE(SUM(pi.quantity), 0)
+              FROM prescription_items pi WHERE pi.prescription_id = p.id) >
+             (SELECT COUNT(*)
+              FROM prescription_trace_codes ptc
+              JOIN medicine_trace_codes tc ON tc.id = ptc.trace_code_id
+              WHERE ptc.prescription_id = p.id AND tc.status = 'scanned_confirm')
+       ORDER BY p.created_at DESC
+       LIMIT 100`,
+      params.length ? params : undefined
+    );
+
+    res.json(list);
+  } catch (err: any) {
+    res.status(500).json({ error: '服务器错误: ' + err.message });
+  }
+});
+
 // GET /api/prescriptions/:id — detail with items
 router.get('/:id', async (req: Request, res: Response) => {
   try {
@@ -344,18 +346,32 @@ router.get('/:id', async (req: Request, res: Response) => {
     await ensurePrescriptionTraceCodesTable(pool);
 
     // Get items
-    const [items] = await pool.query(
-      `SELECT pi.*, m.name as medicine_name, m.specification, m.manufacturer, m.unit,
-              tc.trace_code, tc.status AS trace_status, tc.scan1_time, tc.scan2_time, tc.scan3_time
+    const [items] = await pool.query<any[]>(
+      `SELECT pi.*, m.name as medicine_name, m.specification, m.manufacturer, m.unit
        FROM prescription_items pi
        LEFT JOIN medicines m ON pi.medicine_id = m.id
-       LEFT JOIN prescription_trace_codes ptc ON ptc.prescription_item_id = pi.id
-       LEFT JOIN medicine_trace_codes tc ON tc.id = ptc.trace_code_id
        WHERE pi.prescription_id = ?`,
       [id]
     );
 
-    res.json({ ...prescription, items });
+    const [traceCodes] = await pool.query<any[]>(
+      `SELECT ptc.prescription_item_id, tc.trace_code, tc.status AS trace_status,
+              tc.scan1_time, tc.scan2_time, tc.scan3_time
+       FROM prescription_trace_codes ptc
+       JOIN medicine_trace_codes tc ON tc.id = ptc.trace_code_id
+       WHERE ptc.prescription_id = ?
+       ORDER BY ptc.id ASC`,
+      [id]
+    );
+
+    const itemsWithTraceCodes = items.map((item) => ({
+      ...item,
+      trace_codes: traceCodes
+        .filter((trace) => Number(trace.prescription_item_id) === Number(item.id))
+        .map(({ prescription_item_id: _prescriptionItemId, ...trace }) => trace),
+    }));
+
+    res.json({ ...prescription, items: itemsWithTraceCodes });
   } catch (err: any) {
     res.status(500).json({ error: '服务器错误: ' + err.message });
   }
@@ -663,21 +679,8 @@ router.delete('/all', async (_req: Request, res: Response) => {
     const [robotRows] = await conn.query<any[]>('SELECT DISTINCT robot_id FROM delivery_records');
     const robotIds = robotRows.map((row) => row.robot_id).filter(Boolean);
 
-    const [traceRows] = await conn.query<any[]>(
-      `SELECT DISTINCT tc.id
-       FROM medicine_trace_codes tc
-       LEFT JOIN prescription_trace_codes ptc ON ptc.trace_code_id = tc.id
-       WHERE tc.prescription_id IS NOT NULL OR ptc.prescription_id IS NOT NULL`
-    );
-    const traceCodeIds = traceRows.map((row) => row.id);
-
+    await conn.query('UPDATE medicine_trace_codes SET prescription_id = NULL WHERE prescription_id IS NOT NULL');
     await conn.query('DELETE FROM prescription_trace_codes');
-    if (traceCodeIds.length > 0) {
-      await conn.query(
-        `DELETE FROM medicine_trace_codes WHERE id IN (${traceCodeIds.map(() => '?').join(', ')})`,
-        traceCodeIds
-      );
-    }
     await conn.query('DELETE FROM delivery_records');
     if (robotIds.length > 0) {
       await conn.query(
@@ -694,7 +697,7 @@ router.delete('/all', async (_req: Request, res: Response) => {
     // 联动清空大屏后端该处方的节点数据（删除失败不影响 HIS 删除结果）
     notifyBackendPrescriptionDeleted(deletedCodes);
 
-    res.json({ message: `已删除 ${(result as any).affectedRows || 0} 条处方，已删除 ${traceCodeIds.length} 个关联追溯码` });
+    res.json({ message: `已删除 ${(result as any).affectedRows || 0} 条处方，追溯码记录已保留` });
   } catch (err: any) {
     await conn.rollback();
     res.status(500).json({ error: '服务器错误: ' + err.message });
@@ -729,28 +732,14 @@ router.delete('/:id', async (req: Request, res: Response) => {
       source: 'HIS 删除处方（已登录账号）',
     });
 
-    const [traceRows] = await conn.query<any[]>(
-      `SELECT DISTINCT tc.id
-       FROM medicine_trace_codes tc
-       LEFT JOIN prescription_trace_codes ptc ON ptc.trace_code_id = tc.id
-       WHERE tc.prescription_id = ? OR ptc.prescription_id = ?`,
-      [id, id]
-    );
-    const traceCodeIds = traceRows.map((row) => row.id);
-
     const [robotRows] = await conn.query<any[]>(
       'SELECT DISTINCT robot_id FROM delivery_records WHERE prescription_id = ?',
       [id]
     );
     const robotIds = robotRows.map((row) => row.robot_id).filter(Boolean);
 
+    await conn.query('UPDATE medicine_trace_codes SET prescription_id = NULL WHERE prescription_id = ?', [id]);
     await conn.query('DELETE FROM prescription_trace_codes WHERE prescription_id = ?', [id]);
-    if (traceCodeIds.length > 0) {
-      await conn.query(
-        `DELETE FROM medicine_trace_codes WHERE id IN (${traceCodeIds.map(() => '?').join(', ')})`,
-        traceCodeIds
-      );
-    }
     await conn.query('DELETE FROM delivery_records WHERE prescription_id = ?', [id]);
     if (robotIds.length > 0) {
       await conn.query(
@@ -778,7 +767,7 @@ router.delete('/:id', async (req: Request, res: Response) => {
       notifyBackendPrescriptionDeleted([deletedCode]);
     }
 
-    res.json({ message: `处方已删除，已删除 ${traceCodeIds.length} 个关联追溯码` });
+    res.json({ message: '处方已删除，追溯码记录已保留' });
   } catch (err: any) {
     await conn.rollback();
     res.status(500).json({ error: '服务器错误: ' + err.message });

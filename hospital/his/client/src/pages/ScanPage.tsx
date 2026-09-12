@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { medicineTraceCodeApi } from '../services/api';
+import { medicineTraceCodeApi, prescriptionApi } from '../services/api';
+import type { Prescription } from '../types';
 import { formatDateTime } from '../utils/date';
 import ModuleIcon from '../components/ModuleIcon';
 
@@ -104,6 +105,9 @@ const playBeep = () => {
 };
 
 export default function ScanPage() {
+  const [prescriptions, setPrescriptions] = useState<Prescription[]>([]);
+  const [selectedPrescriptionId, setSelectedPrescriptionId] = useState<number | null>(null);
+  const [prescriptionDetail, setPrescriptionDetail] = useState<Prescription | null>(null);
   const [history, setHistory] = useState<TraceEntry[]>([]);
   const [searchCode, setSearchCode] = useState('');
   const [searchResult, setSearchResult] = useState<TraceEntry | null>(null);
@@ -118,6 +122,31 @@ export default function ScanPage() {
   const barcodeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const processCodeRef = useRef<(code: string) => void>(() => {});
 
+  const loadPrescriptionDetail = async (prescriptionId: number) => {
+    const detail = await prescriptionApi.getById(prescriptionId);
+    setPrescriptionDetail(detail);
+  };
+
+  useEffect(() => {
+    void prescriptionApi.scanReady()
+      .then((list) => {
+        setPrescriptions(list);
+        if (list.length > 0) setSelectedPrescriptionId(list[0].id);
+      })
+      .catch(() => showToast('可发药处方加载失败', 'error'));
+  }, []);
+
+  useEffect(() => {
+    setHistory([]);
+    setSearchResult(null);
+    if (!selectedPrescriptionId) {
+      setPrescriptionDetail(null);
+      return;
+    }
+    void loadPrescriptionDetail(selectedPrescriptionId)
+      .catch(() => showToast('处方明细加载失败', 'error'));
+  }, [selectedPrescriptionId]);
+
   const showToast = (text: string, type: 'success' | 'error') => {
     setToast({ text, type });
     window.setTimeout(() => setToast(null), 2200);
@@ -126,6 +155,10 @@ export default function ScanPage() {
   const processCode = async (value: string) => {
     const code = normalizeTraceCodeInput(value);
     if (!code || busyRef.current || code === lastCodeRef.current) return;
+    if (!selectedPrescriptionId) {
+      showToast('请先选择当前处方', 'error');
+      return;
+    }
 
     busyRef.current = true;
     lastCodeRef.current = code;
@@ -134,8 +167,8 @@ export default function ScanPage() {
 
     try {
       const data = await medicineTraceCodeApi.lookup(code);
-      if (!data.prescription_id) {
-        throw new Error('本药品未开处方');
+      if (data.prescription_id && Number(data.prescription_id) !== selectedPrescriptionId) {
+        throw new Error('该追溯码已绑定其他处方');
       }
       if (data.status === 'scanned_confirm') {
         throw new Error('本药品已完成全部扫描');
@@ -227,14 +260,27 @@ export default function ScanPage() {
 
   const handleConfirm = async (entry: TraceEntry) => {
     if (confirmingCode) return;
+    if (entry.kind !== 'import' && !selectedPrescriptionId) {
+      showToast('请先选择当前处方', 'error');
+      return;
+    }
     setConfirmingCode(entry.trace_code);
     try {
       const data = entry.kind === 'import'
         ? await medicineTraceCodeApi.registerByPrefix(entry.trace_code)
-        : await medicineTraceCodeApi.scanByCode(entry.trace_code);
+        : await medicineTraceCodeApi.scanByCode(entry.trace_code, selectedPrescriptionId!);
       setHistory((current) => current.filter((item) => item.trace_code !== entry.trace_code));
       setSearchResult(toEntry(data, entry.trace_code, data.action || '已录入'));
       showToast(entry.kind === 'import' ? '追溯码已确认入库' : `${data.action || '药品'}已确认并录入数据库`, 'success');
+      if (entry.kind !== 'import') {
+        const list = await prescriptionApi.scanReady();
+        setPrescriptions(list);
+        if (list.some((prescription) => prescription.id === selectedPrescriptionId)) {
+          await loadPrescriptionDetail(selectedPrescriptionId!);
+        } else {
+          setSelectedPrescriptionId(list[0]?.id || null);
+        }
+      }
     } catch (err: any) {
       const message = err.response?.data?.error || err.message || '确认录入失败，请重试';
       showToast(message, 'error');
@@ -252,6 +298,34 @@ export default function ScanPage() {
           <p>扫码后先暂存药品信息，药师确认后才会录入数据库。</p>
         </div>
       </div>
+
+      <section className="outbound-search glass-card" style={{ marginBottom: 16 }}>
+        <div className="outbound-search__label">当前处理处方</div>
+        <select
+          className="glass-input"
+          value={selectedPrescriptionId || ''}
+          onChange={(event) => setSelectedPrescriptionId(event.target.value ? Number(event.target.value) : null)}
+        >
+          <option value="">请选择可发药处方</option>
+          {prescriptions.map((prescription) => (
+            <option key={prescription.id} value={prescription.id}>
+              {prescription.prescription_code || `#${prescription.id}`} · {prescription.patient_name || '未知病人'}
+            </option>
+          ))}
+        </select>
+        {prescriptionDetail?.items && (
+          <div style={{ marginTop: 12, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {prescriptionDetail.items.map((item) => {
+              const boundCount = item.trace_codes?.length || 0;
+              return (
+                <span key={item.id} className="outbound-status outbound-status--pending">
+                  {item.medicine_name} {boundCount}/{item.quantity}{item.unit || ''}
+                </span>
+              );
+            })}
+          </div>
+        )}
+      </section>
 
       <section className="outbound-search glass-card">
         <div className="outbound-search__label">手动查询追溯码</div>

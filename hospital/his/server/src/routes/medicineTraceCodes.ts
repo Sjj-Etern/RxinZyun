@@ -263,11 +263,13 @@ async function checkScanProgressAndNotify(conn: any, prescriptionId: number | nu
   if (!prescriptionId) return;
   try {
     const [countRows] = await conn.query(
-      `SELECT COUNT(*) AS total,
-              SUM(CASE WHEN status IN ('scanned_outbound', 'scanned_confirm') THEN 1 ELSE 0 END) AS scanned
-       FROM medicine_trace_codes
-       WHERE prescription_id = ?`,
-      [prescriptionId]
+      `SELECT
+         (SELECT COALESCE(SUM(quantity), 0) FROM prescription_items WHERE prescription_id = ?) AS total,
+         (SELECT COUNT(*)
+          FROM prescription_trace_codes ptc
+          JOIN medicine_trace_codes tc ON tc.id = ptc.trace_code_id
+          WHERE ptc.prescription_id = ? AND tc.status IN ('scanned_outbound', 'scanned_confirm')) AS scanned`,
+      [prescriptionId, prescriptionId]
     );
     const total = Number(countRows[0]?.total || 0);
     const scanned = Number(countRows[0]?.scanned || 0);
@@ -300,11 +302,13 @@ async function checkNode3CompletedAndNotify(conn: any, prescriptionId: number | 
     // 判定包含 scanned_confirm：只要每个码完成过第一次扫码（无论是否又被第二次扫码推进到确认状态），
     // 即视为第一轮出库完成。防止药师重复扫码把状态推到 scanned_confirm 后 outbound 计数归零、永不触发。
     const [countRows] = await conn.query(
-      `SELECT COUNT(*) AS total,
-              SUM(CASE WHEN status IN ('scanned_outbound', 'scanned_confirm') THEN 1 ELSE 0 END) AS outbound
-       FROM medicine_trace_codes
-       WHERE prescription_id = ?`,
-      [prescriptionId]
+      `SELECT
+         (SELECT COALESCE(SUM(quantity), 0) FROM prescription_items WHERE prescription_id = ?) AS total,
+         (SELECT COUNT(*)
+          FROM prescription_trace_codes ptc
+          JOIN medicine_trace_codes tc ON tc.id = ptc.trace_code_id
+          WHERE ptc.prescription_id = ? AND tc.status IN ('scanned_outbound', 'scanned_confirm')) AS outbound`,
+      [prescriptionId, prescriptionId]
     );
     const total = Number(countRows[0]?.total || 0);
     const outbound = Number(countRows[0]?.outbound || 0);
@@ -361,11 +365,13 @@ async function checkNode4CompletedAndNotify(conn: any, prescriptionId: number | 
 
   try {
     const [countRows] = await conn.query(
-      `SELECT COUNT(*) AS total,
-              SUM(CASE WHEN status = 'scanned_confirm' THEN 1 ELSE 0 END) AS confirmed
-       FROM medicine_trace_codes
-       WHERE prescription_id = ?`,
-      [prescriptionId]
+      `SELECT
+         (SELECT COALESCE(SUM(quantity), 0) FROM prescription_items WHERE prescription_id = ?) AS total,
+         (SELECT COUNT(*)
+          FROM prescription_trace_codes ptc
+          JOIN medicine_trace_codes tc ON tc.id = ptc.trace_code_id
+          WHERE ptc.prescription_id = ? AND tc.status = 'scanned_confirm') AS confirmed`,
+      [prescriptionId, prescriptionId]
     );
     const total = Number(countRows[0]?.total || 0);
     const confirmed = Number(countRows[0]?.confirmed || 0);
@@ -886,8 +892,9 @@ router.post('/scan-by-code', async (req: Request, res: Response) => {
   const conn = await pool.getConnection();
   try {
     const { trace_code } = req.body;
-    if (!trace_code) {
-      res.status(400).json({ error: '追溯码不能为空' });
+    const prescriptionId = Number(req.body.prescription_id);
+    if (!trace_code || !Number.isInteger(prescriptionId) || prescriptionId <= 0) {
+      res.status(400).json({ error: '请选择处方并扫描有效追溯码' });
       return;
     }
 
@@ -897,13 +904,24 @@ router.post('/scan-by-code', async (req: Request, res: Response) => {
     const record = await findTraceCodeByInputForUpdate(conn, trace_code);
     if (!record) {
       await conn.rollback();
-      res.status(400).json({ error: '本药品未开处方' });
+      res.status(404).json({ error: '追溯码不存在，请先扫码入库' });
       return;
     }
 
-    if (!record.prescription_id) {
+    const [prescriptionRows] = await conn.query<any[]>(
+      'SELECT id, status FROM prescriptions WHERE id = ? FOR UPDATE',
+      [prescriptionId]
+    );
+    if (!prescriptionRows.length || !['approved', 'dispensed'].includes(prescriptionRows[0].status)) {
       await conn.rollback();
-      res.status(400).json({ error: '本药品未开处方' });
+      res.status(400).json({ error: '当前处方不存在或不在可发药状态' });
+      return;
+    }
+
+    const linkedPrescriptionId = record.prescription_id ? Number(record.prescription_id) : null;
+    if (linkedPrescriptionId && linkedPrescriptionId !== prescriptionId) {
+      await conn.rollback();
+      res.status(409).json({ error: '该追溯码已绑定其他处方' });
       return;
     }
 
@@ -912,8 +930,44 @@ router.post('/scan-by-code', async (req: Request, res: Response) => {
     const updateParams: any[] = [];
     let actionName: string;
     if (record.status === 'pending' || record.status === 'scanned_identify') {
-      updateSql = 'UPDATE medicine_trace_codes SET status = ?, scan2_time = NOW(), scan2_user_id = ? WHERE id = ?';
-      updateParams.push('scanned_outbound', userId, record.id);
+      if (linkedPrescriptionId) {
+        await conn.rollback();
+        res.status(409).json({ error: '该追溯码关联状态异常，请检查后重试' });
+        return;
+      }
+
+      const [itemRows] = await conn.query<any[]>(
+        `SELECT id, quantity
+         FROM prescription_items
+         WHERE prescription_id = ? AND medicine_id = ?
+         ORDER BY id ASC LIMIT 1 FOR UPDATE`,
+        [prescriptionId, record.medicine_id]
+      );
+      if (!itemRows.length) {
+        await conn.rollback();
+        res.status(400).json({ error: `当前处方不包含药品：${record.medicine_name}` });
+        return;
+      }
+
+      const prescriptionItemId = Number(itemRows[0].id);
+      const requiredQuantity = Number(itemRows[0].quantity || 0);
+      const [boundRows] = await conn.query<any[]>(
+        'SELECT COUNT(*) AS count FROM prescription_trace_codes WHERE prescription_item_id = ?',
+        [prescriptionItemId]
+      );
+      if (Number(boundRows[0]?.count || 0) >= requiredQuantity) {
+        await conn.rollback();
+        res.status(409).json({ error: `${record.medicine_name} 已达到处方数量 ${requiredQuantity}` });
+        return;
+      }
+
+      await conn.query(
+        `INSERT INTO prescription_trace_codes (prescription_id, prescription_item_id, medicine_id, trace_code_id)
+         VALUES (?, ?, ?, ?)`,
+        [prescriptionId, prescriptionItemId, record.medicine_id, record.id]
+      );
+      updateSql = 'UPDATE medicine_trace_codes SET status = ?, scan2_time = NOW(), scan2_user_id = ?, prescription_id = ? WHERE id = ?';
+      updateParams.push('scanned_outbound', userId, prescriptionId, record.id);
       actionName = '出库';
     } else if (record.status === 'scanned_outbound') {
       updateSql = 'UPDATE medicine_trace_codes SET status = ?, scan3_time = NOW(), scan3_user_id = ? WHERE id = ?';
@@ -927,7 +981,7 @@ router.post('/scan-by-code', async (req: Request, res: Response) => {
 
     await conn.query(updateSql, updateParams);
 
-    await appendCompletedScanStages(conn, Number(record.prescription_id), userId);
+    await appendCompletedScanStages(conn, prescriptionId, userId);
 
     // Return updated record with medicine info
     const [updated] = await conn.query<any[]>(
@@ -945,14 +999,14 @@ router.post('/scan-by-code', async (req: Request, res: Response) => {
 
     // 第一次实际扫码完成整张处方后，通知大屏后端触发车2 pharmacist-success。
     if (record.status === 'pending' || record.status === 'scanned_identify') {
-      await checkScanProgressAndNotify(conn, record.prescription_id, record.medicine_id);
-      await checkNode3CompletedAndNotify(conn, record.prescription_id);
+      await checkScanProgressAndNotify(conn, prescriptionId, record.medicine_id);
+      await checkNode3CompletedAndNotify(conn, prescriptionId);
     }
     // 节点4扫码全部确认检测：scanned_outbound → scanned_confirm 时检查该处方是否全部确认
     if (record.status === 'scanned_outbound') {
       // 兜底：若节点3触发时机被错过（如通知失败/重复扫码），第二次扫码时补检（判定含 scanned_confirm）
-      await checkNode3CompletedAndNotify(conn, record.prescription_id);
-      await checkNode4CompletedAndNotify(conn, record.prescription_id);
+      await checkNode3CompletedAndNotify(conn, prescriptionId);
+      await checkNode4CompletedAndNotify(conn, prescriptionId);
     }
 
     res.json({

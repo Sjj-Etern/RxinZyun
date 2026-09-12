@@ -133,7 +133,11 @@ export default function PrescriptionDetailPage() {
               {prescription.items.map((item, i) => (
                 <motion.tr key={item.id} variants={rowAnim} custom={i} initial="hidden" animate="visible">
                   <td><strong>{item.medicine_name}</strong></td>
-                  <td><code style={{ fontSize: 11, wordBreak: 'break-all' }}>{item.trace_code || '-'}</code></td>
+                  <td>
+                    {item.trace_codes?.length
+                      ? item.trace_codes.map((trace) => <code key={trace.trace_code} style={{ display: 'block', fontSize: 11, wordBreak: 'break-all' }}>{trace.trace_code}</code>)
+                      : <span>-</span>}
+                  </td>
                   <td style={{ fontSize: 13 }}>{item.specification}</td>
                   <td>{item.dosage}</td>
                   <td>{item.usage_method}</td>

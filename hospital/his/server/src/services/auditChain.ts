@@ -285,11 +285,17 @@ const eventExists = async (conn: any, prescriptionId: number, eventType: AuditEv
 export const appendCompletedScanStages = async (conn: any, prescriptionId: number, operatorId?: number | null) => {
   await ensureAuditChainTable(conn);
   const [counts] = await conn.query(
-    `SELECT COUNT(*) AS total,
-            SUM(CASE WHEN status IN ('scanned_outbound', 'scanned_confirm') THEN 1 ELSE 0 END) AS pharmacist_done,
-            SUM(CASE WHEN status = 'scanned_confirm' THEN 1 ELSE 0 END) AS nurse_done
-     FROM medicine_trace_codes WHERE prescription_id = ?`,
-    [prescriptionId]
+    `SELECT
+       (SELECT COALESCE(SUM(quantity), 0) FROM prescription_items WHERE prescription_id = ?) AS total,
+       (SELECT COUNT(*)
+        FROM prescription_trace_codes ptc
+        JOIN medicine_trace_codes tc ON tc.id = ptc.trace_code_id
+        WHERE ptc.prescription_id = ? AND tc.status IN ('scanned_outbound', 'scanned_confirm')) AS pharmacist_done,
+       (SELECT COUNT(*)
+        FROM prescription_trace_codes ptc
+        JOIN medicine_trace_codes tc ON tc.id = ptc.trace_code_id
+        WHERE ptc.prescription_id = ? AND tc.status = 'scanned_confirm') AS nurse_done`,
+    [prescriptionId, prescriptionId, prescriptionId]
   );
   const total = Number(counts[0]?.total || 0);
   if (total === 0) return;

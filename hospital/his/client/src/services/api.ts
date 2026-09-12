@@ -233,8 +233,8 @@ export const medicineTraceCodeApi = {
   unscan: (id: number) =>
     api.put<MedicineTraceCode>(`/medicine-trace-codes/${id}/unscan`).then((r) => r.data),
 
-  scanByCode: (trace_code: string) =>
-    api.post('/medicine-trace-codes/scan-by-code', { trace_code }).then((r) => r.data),
+  scanByCode: (trace_code: string, prescription_id: number) =>
+    api.post('/medicine-trace-codes/scan-by-code', { trace_code, prescription_id }).then((r) => r.data),
 
   lookup: (trace_code: string) =>
     api.get('/medicine-trace-codes/lookup', { params: { trace_code } }).then((r) => r.data),
@@ -286,6 +286,9 @@ export const prescriptionApi = {
 
   getById: (id: number) =>
     api.get<Prescription>(`/prescriptions/${id}`).then((r) => r.data),
+
+  scanReady: () =>
+    api.get<Prescription[]>('/prescriptions/scan-ready').then((r) => r.data),
 
   analyze: (id: number) =>
     api.post<PrescriptionAnalysisResult>(`/prescriptions/${id}/analyze`).then((r) => r.data),

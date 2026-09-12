@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { prescriptionApi, patientApi, medicineApi, medicineTraceCodeApi } from '../services/api';
+import { prescriptionApi, patientApi, medicineApi } from '../services/api';
 import type { Patient, Medicine, PrescriptionItemFormData } from '../types';
 import Modal from '../components/Modal';
 import { showToast } from '../components/Toast';
@@ -100,12 +100,11 @@ export default function PrescriptionNewPage() {
   const [medSearch, setMedSearch] = useState('');
   const [medicines, setMedicines] = useState<Medicine[]>([]);
   const [medSearching, setMedSearching] = useState(false);
-  const [traceSearching, setTraceSearching] = useState(false);
   const [items, setItems] = useState<MedItem[]>(savedDraft?.items || []);
 
   const [medModalOpen, setMedModalOpen] = useState(false);
   const [selectedMed, setSelectedMed] = useState<Medicine | null>(null);
-  const [medForm, setMedForm] = useState({ dosage: '', trace_code: '', usage_method: '口服', frequency: '每日3次', days: 3, quantity: 1, note: '' });
+  const [medForm, setMedForm] = useState({ dosage: '', usage_method: '口服', frequency: '每日3次', days: 3, quantity: 1, note: '' });
 
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -121,12 +120,6 @@ export default function PrescriptionNewPage() {
 
   const searchMedicines = async (kw: string) => {
     if (!kw.trim()) { setMedicines([]); return; }
-    const keyword = kw.trim();
-    if (/^\d{20,}$/.test(keyword)) {
-      await lookupTraceCodeValue(keyword);
-      setMedicines([]);
-      return;
-    }
     setMedSearching(true);
     try { const data = await medicineApi.list({ page: 1, pageSize: 10, keyword: kw }); setMedicines(data.list); }
     catch (err) { console.error(err); }
@@ -152,80 +145,23 @@ export default function PrescriptionNewPage() {
 
   const selectPatient = (p: Patient) => { setSelectedPatient(p); setPatientSearch(''); setPatients([]); };
 
-  const openMedForm = (m: Medicine, traceCode = '') => {
+  const openMedForm = (m: Medicine) => {
     setSelectedMed(m);
-    setMedForm({ dosage: '', trace_code: traceCode, usage_method: '口服', frequency: '每日3次', days: 3, quantity: 1, note: '' });
+    setMedForm({ dosage: '', usage_method: '口服', frequency: '每日3次', days: 3, quantity: 1, note: '' });
     setMedModalOpen(true);
   };
 
-  const lookupTraceCodeValue = async (traceCode: string) => {
-    if (!traceCode) { setError('请输入追溯码'); return; }
-    if (items.length >= 5) { setError('每张处方最多添加5种药品'); return; }
-    if (items.some(item => item.trace_code === traceCode)) { setError('追溯码不能重复'); return; }
-
-    setTraceSearching(true);
-    setError('');
-    try {
-      const data = await medicineTraceCodeApi.lookup(traceCode);
-      if (data.prescription_id) {
-        setError('该追溯码已关联其他处方，不能用于新处方');
-        return;
-      }
-      if (data.status !== 'pending' || data.scan1_time || data.scan2_time || data.scan3_time) {
-        setError('该追溯码已被扫描，不能用于新处方');
-        return;
-      }
-      if (items.some(item => item.medicine_id === data.medicine_id)) {
-        setError('处方中的药品不能重复');
-        return;
-      }
-
-      const medicine: Medicine = {
-        id: data.medicine_id,
-        name: data.medicine_name,
-        generic_name: data.generic_name || '',
-        specification: data.specification || '',
-        drug_form: data.drug_form || '',
-        manufacturer: data.manufacturer || '',
-        unit: data.unit || '',
-        price: Number(data.price || 0),
-        stock: Number(data.stock || 0),
-        category: (data.category || '处方药') as Medicine['category'],
-        is_narcotic: data.is_narcotic || 0,
-        image_url: data.image_url || '',
-        created_at: data.created_at || '',
-      };
-
-      setMedSearch('');
-      setMedicines([]);
-      openMedForm(medicine, traceCode);
-    } catch (err: any) {
-      setError(err.response?.data?.error || '追溯码识别失败');
-    } finally {
-      setTraceSearching(false);
-    }
-  };
-
-  const lookupTraceCode = async () => {
-    await lookupTraceCodeValue(medSearch.trim());
-  };
-
   const addMedItem = () => {
-    const traceCode = medForm.trace_code.trim();
     if (items.length >= 5) {
       setError('每张处方最多添加5种药品');
       return;
     }
-    if (!selectedMed || !medForm.dosage.trim() || !traceCode) {
-      setError('请填写药品用量和追溯码');
+    if (!selectedMed || !medForm.dosage.trim()) {
+      setError('请填写药品用量');
       return;
     }
     if (items.some(item => item.medicine_id === selectedMed.id)) {
       setError('处方中的药品不能重复');
-      return;
-    }
-    if (items.some(item => item.trace_code === traceCode)) {
-      setError('追溯码不能重复');
       return;
     }
     setError('');
@@ -236,7 +172,6 @@ export default function PrescriptionNewPage() {
       price: selectedMed.price,
       ...medForm,
       dosage: medForm.dosage.trim(),
-      trace_code: traceCode,
     }]);
     setMedModalOpen(false); setSelectedMed(null); setMedSearch(''); setMedicines([]);
   };
@@ -249,7 +184,6 @@ export default function PrescriptionNewPage() {
     if (!diagnosis.trim()) { setError('请填写临床诊断'); return; }
     if (items.length === 0) { setError('请至少添加一种药品'); return; }
     if (items.length > 5) { setError('每张处方最多添加5种药品'); return; }
-    if (items.some(item => !item.trace_code?.trim())) { setError('每个药品都必须填写追溯码'); return; }
     setConfirmOpen(true);
   };
 
@@ -262,8 +196,8 @@ export default function PrescriptionNewPage() {
         prescription_type: prescriptionType, payment_type: paymentType,
         medical_record_no: medicalRecordNo, department, bed_no: bedNo,
         diagnosis: diagnosis.trim(), note: note.trim(),
-        items: items.map(({ medicine_id, trace_code, drug_form, dosage, usage_method, frequency, days, quantity, note }) =>
-          ({ medicine_id, trace_code, drug_form, dosage, usage_method, frequency, days, quantity, note })),
+        items: items.map(({ medicine_id, drug_form, dosage, usage_method, frequency, days, quantity, note }) =>
+          ({ medicine_id, drug_form, dosage, usage_method, frequency, days, quantity, note })),
       });
       localStorage.removeItem(DRAFT_KEY);
       setPrescriptionType('普通');
@@ -404,14 +338,13 @@ export default function PrescriptionNewPage() {
             <div style={{ marginBottom: 16 }}>
               <table className="glass-table">
                 <thead>
-                  <tr><th>药品名称</th><th>追溯码</th><th>规格</th><th>用量</th><th>用法</th><th>频次</th><th>天数</th><th>数量</th><th>操作</th></tr>
+                  <tr><th>药品名称</th><th>规格</th><th>用量</th><th>用法</th><th>频次</th><th>天数</th><th>数量</th><th>操作</th></tr>
                 </thead>
                 <tbody>
                   <AnimatePresence>
                     {items.map((item, i) => (
                       <motion.tr key={i} initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }}>
                         <td><strong>{item.medicine_name}</strong></td>
-                        <td><code style={{ fontSize: 11, wordBreak: 'break-all' }}>{item.trace_code}</code></td>
                         <td style={{ fontSize: 13 }}>{item.specification}</td>
                         <td>{item.dosage}</td>
                         <td>{item.usage_method}</td>
@@ -435,14 +368,10 @@ export default function PrescriptionNewPage() {
                 <input
                   className="glass-input"
                   style={{ flex: 1 }}
-                  placeholder="搜索药品名称或输入追溯码..."
+                  placeholder="搜索药品名称..."
                   value={medSearch}
                   onChange={(e) => setMedSearch(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); lookupTraceCode(); } }}
                 />
-                <button type="button" className="glass-btn glass-btn--primary" onClick={lookupTraceCode} disabled={traceSearching}>
-                  {traceSearching ? '识别中...' : '识别'}
-                </button>
               </div>
               {medSearching && <div style={{ padding: 8, color: 'var(--text-muted)', fontSize: 14 }}>搜索中...</div>}
               {medicines.length > 0 && (
@@ -487,7 +416,7 @@ export default function PrescriptionNewPage() {
                 <div><strong>药品数量：</strong>{items.length} 种</div>
                 <div style={{ marginTop: 8, padding: '8px 12px', background: PRESCRIPTION_COLORS[prescriptionType].bg, border: `1px solid ${PRESCRIPTION_COLORS[prescriptionType].border}`, borderRadius: 8 }}>
                   {items.map((item, i) => (
-                    <div key={i}>{item.medicine_name} — {item.trace_code} · {item.dosage} · {item.usage_method} · {item.frequency} × {item.days}天 × {item.quantity}{item.unit}</div>
+                    <div key={i}>{item.medicine_name} · {item.dosage} · {item.usage_method} · {item.frequency} × {item.days}天 × {item.quantity}{item.unit}</div>
                   ))}
                 </div>
               </div>
@@ -510,10 +439,6 @@ export default function PrescriptionNewPage() {
           <div className="form-group">
             <label>用量 *</label>
             <input className="glass-input" placeholder="如 1片、10ml" value={medForm.dosage} onChange={(e) => setMedForm({ ...medForm, dosage: e.target.value })} autoFocus />
-          </div>
-          <div className="form-group">
-            <label>追溯码 *</label>
-            <input className="glass-input" placeholder="请输入该药品追溯码" value={medForm.trace_code} onChange={(e) => setMedForm({ ...medForm, trace_code: e.target.value })} />
           </div>
           <div className="form-group">
             <label>用法</label>

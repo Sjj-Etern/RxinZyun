@@ -90,11 +90,17 @@ export interface PrescriptionItem {
   scan1_time?: string | null;
   scan2_time?: string | null;
   scan3_time?: string | null;
+  trace_codes?: Array<{
+    trace_code: string;
+    trace_status: 'pending' | 'scanned_identify' | 'scanned_outbound' | 'scanned_confirm';
+    scan1_time: string | null;
+    scan2_time: string | null;
+    scan3_time: string | null;
+  }>;
 }
 
 export interface PrescriptionItemFormData {
   medicine_id: number;
-  trace_code: string;
   drug_form?: string;
   dosage: string;
   usage_method: string;
