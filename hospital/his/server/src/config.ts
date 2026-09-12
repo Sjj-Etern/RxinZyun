@@ -54,6 +54,7 @@ export const config = {
   auth: {
     jwtSecret: required('JWT_SECRET'),
     jwtExpiresIn: required('JWT_EXPIRES_IN'),
+    jwtRefreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '30d',
     auditHashSalt: required('AUDIT_HASH_SALT'),
   },
   services: {

@@ -14,7 +14,7 @@ import { auditChainApi, medicineApi, patientApi, prescriptionApi } from '../serv
 import type { AuditBranchRecord, AuditChainChange, AuditChainRecord, AuditChainVerifyResult } from '../services/api';
 import type { Medicine, Prescription } from '../types';
 import { STATUS_LABELS } from '../types';
-import { formatDateTime } from '../utils/date';
+import { formatBeijingDateTime, formatDateTime } from '../utils/date';
 
 type BasicModuleKind =
   | 'dispense'
@@ -398,10 +398,8 @@ function AuditChainDashboard({
     .filter((change) => change.status === 'pending')
     .sort((a, b) => new Date(a.detected_at).getTime() - new Date(b.detected_at).getTime() || a.id - b.id);
   const pendingChange = pendingChanges[0];
-  const focusPrescriptionId = String(pendingChange?.prescription_id || chronological[chronological.length - 1]?.entity_id || '');
-  const prescriptionRecords = chronological.filter((record) => String(record.entity_id) === focusPrescriptionId);
   const pendingBaselineId = Number(pendingChange?.baseline_record_id || 0);
-  const visibleNodes = prescriptionRecords;
+  const visibleNodes = chronological;
   const fallbackBranchRecords: AuditBranchRecord[] = pendingChange ? [
     {
       kind: 'change', source_record_id: null, event_type: pendingChange.change_type === 'deleted' ? 'DATA_DELETED' : 'DATA_CHANGED', entity_id: String(pendingChange.prescription_id),
@@ -494,7 +492,7 @@ function AuditChainDashboard({
                     <div className="audit-chain-node-index">节点 {index + 1}</div>
                     {hasDataChange && record.id === pendingBaselineId && <div className="audit-chain-node-alert">原记录已与数据库数据偏离</div>}
                     <div className="audit-chain-node-title">{AUDIT_EVENT_LABELS[record.event_type]}</div>
-                    <div className="audit-chain-node-time">{formatDateTime(record.event_time)}</div>
+                    <div className="audit-chain-node-time">{formatBeijingDateTime(record.event_time)}</div>
                     <div className="audit-chain-node-hash"><span>HASH</span>{shortHash(record.current_hash)}</div>
                     {index < visibleNodes.length - 1 && <span className="audit-chain-link" />}
                   </div>
@@ -517,7 +515,7 @@ function AuditChainDashboard({
         >
           <div className="audit-chain-panel-head">
             <h4>差异分支</h4>
-            <small>{formatDateTime(pendingChange.detected_at)}</small>
+            <small>{formatBeijingDateTime(pendingChange.detected_at)}</small>
           </div>
           <div className="audit-chain-visual audit-chain-visual--vertical audit-chain-visual--candidate">
             {candidateBranchRecords.map((record, index) => {
@@ -529,7 +527,7 @@ function AuditChainDashboard({
                 <div className={`audit-chain-node ${isChangeNode ? (record.event_type === 'DATA_DELETED' ? 'audit-chain-node--deleted' : 'audit-chain-node--changed') : isCompletionNode ? 'audit-chain-node--candidate' : ''} ${differenceFocused && isChangeNode ? 'audit-chain-node--difference-focus' : ''}`}>
                   <div className="audit-chain-node-index">节点 {visibleNodes.length + index + 1}{isLatestNode ? ' · 最新' : ''}</div>
                   <div className="audit-chain-node-title">{isChangeNode ? (record.event_type === 'DATA_DELETED' ? '删除更改' : '数据更改') : isCompletionNode ? '处方结束 · 新链' : AUDIT_EVENT_LABELS[record.event_type]}</div>
-                  <div className="audit-chain-node-time">{formatDateTime(record.event_time)}</div>
+                  <div className="audit-chain-node-time">{formatBeijingDateTime(record.event_time)}</div>
                   <div className="audit-chain-node-hash"><span>{isChangeNode ? 'NEW' : 'HASH'}</span>{shortHash(record.current_hash)}</div>
                   {index < candidateBranchRecords.length - 1 && <span className="audit-chain-link" />}
                 </div>

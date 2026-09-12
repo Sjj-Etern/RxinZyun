@@ -66,7 +66,7 @@ const getTraceCodeCandidates = (value: string) => {
 };
 
 const normalizeTraceCodeInput = (value: string) => {
-  const candidates = getTraceCodeCandidates(value);
+  const candidates = getTraceCodeCandidates(value.replace(/[\r\n]+/g, ''));
   const numeric = candidates.map((candidate) => candidate.replace(/\D/g, '')).find((candidate) => candidate.length >= 7);
   return numeric || value.replace(/\D/g, '');
 };
@@ -186,6 +186,7 @@ export default function ScanPage() {
       if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
 
       if (event.key === 'Enter') {
+        event.preventDefault();
         const value = barcodeBufferRef.current;
         barcodeBufferRef.current = '';
         if (value) void processCodeRef.current(value);
@@ -261,7 +262,11 @@ export default function ScanPage() {
               className="outbound-search__input"
               value={searchCode}
               onChange={(event) => setSearchCode(event.target.value.replace(/\D/g, ''))}
-              onKeyDown={(event) => event.key === 'Enter' && void handleLookup()}
+              onKeyDown={(event) => {
+                if (event.key !== 'Enter') return;
+                event.preventDefault();
+                void handleLookup();
+              }}
               placeholder="输入追溯码，仅查询当前状态，不推进流程"
               aria-label="手动查询追溯码"
             />

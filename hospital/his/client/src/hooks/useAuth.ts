@@ -4,7 +4,7 @@ import type { User } from '../types';
 interface AuthState {
   user: User | null;
   loading: boolean;
-  login: (user: User, token: string) => void;
+  login: (user: User, token: string, refreshToken: string) => void;
   logout: () => void;
 }
 
@@ -26,14 +26,16 @@ export function useAuth(): AuthState {
     setLoading(false);
   }, []);
 
-  const login = (user: User, token: string) => {
+  const login = (user: User, token: string, refreshToken: string) => {
     localStorage.setItem('token', token);
+    localStorage.setItem('refresh_token', refreshToken);
     localStorage.setItem('user', JSON.stringify(user));
     setUser(user);
   };
 
   const logout = () => {
     localStorage.removeItem('token');
+    localStorage.removeItem('refresh_token');
     localStorage.removeItem('user');
     setUser(null);
   };

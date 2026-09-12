@@ -582,16 +582,16 @@ class RosListener:
         tag = self._log_tag()
         from app.services.audio_service import play_audio_async
 
+        if prescription_code and self.audio_state["current_prescription_code"] != prescription_code:
+            self.audio_state["current_prescription_code"] = prescription_code
+            self.audio_state["car_can_go_triggered"] = False
+            self.audio_state["car_already_arrive_triggered"] = False
+            self.audio_state["pickup_done_audio_pending"] = False
+            self.audio_state["nurse_arrive_audio_triggered"] = False
+            print(f"{tag} 新单子开始，重置语音播报状态")
+
         if status in ("running-started", "running_started"):
             if medicine_id is not None and prescription_code:
-                if self.audio_state["current_prescription_code"] != prescription_code:
-                    self.audio_state["current_prescription_code"] = prescription_code
-                    self.audio_state["car_can_go_triggered"] = False
-                    self.audio_state["car_already_arrive_triggered"] = False
-                    self.audio_state["pickup_done_audio_pending"] = False
-                    self.audio_state["nurse_arrive_audio_triggered"] = False
-                    print(f"{tag} 新单子开始，重置语音播报状态")
-
                 if not self.audio_state["car_can_go_triggered"]:
                     print(f"{tag} 触发语音播报：单子开始（car_can_go）")
                     try:

@@ -9,6 +9,8 @@ export interface AuthUser {
   role: 'doctor' | 'pharmacist' | 'admin';
 }
 
+type TokenPayload = AuthUser & { token_type?: 'access' | 'refresh' };
+
 // Extend Express Request
 declare global {
   namespace Express {
@@ -19,9 +21,21 @@ declare global {
 }
 
 export function generateToken(user: AuthUser): string {
-  return jwt.sign(user, config.auth.jwtSecret, {
+  return jwt.sign({ ...user, token_type: 'access' }, config.auth.jwtSecret, {
     expiresIn: config.auth.jwtExpiresIn as jwt.SignOptions['expiresIn'],
   });
+}
+
+export function generateRefreshToken(user: AuthUser): string {
+  return jwt.sign({ ...user, token_type: 'refresh' }, config.auth.jwtSecret, {
+    expiresIn: config.auth.jwtRefreshExpiresIn as jwt.SignOptions['expiresIn'],
+  });
+}
+
+export function verifyRefreshToken(token: string): AuthUser {
+  const decoded = jwt.verify(token, config.auth.jwtSecret) as TokenPayload;
+  if (decoded.token_type !== 'refresh') throw new Error('Invalid refresh token');
+  return { id: decoded.id, username: decoded.username, real_name: decoded.real_name, role: decoded.role };
 }
 
 export function authMiddleware(req: Request, res: Response, next: NextFunction): void {
@@ -33,8 +47,9 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
 
   const token = authHeader.substring(7);
   try {
-    const decoded = jwt.verify(token, config.auth.jwtSecret) as AuthUser;
-    req.user = decoded;
+    const decoded = jwt.verify(token, config.auth.jwtSecret) as TokenPayload;
+    if (decoded.token_type === 'refresh') throw new Error('Invalid access token');
+    req.user = { id: decoded.id, username: decoded.username, real_name: decoded.real_name, role: decoded.role };
     next();
   } catch {
     res.status(401).json({ error: '登录已过期，请重新登录' });

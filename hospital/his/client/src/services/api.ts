@@ -81,10 +81,20 @@ export interface PrescriptionAnalysisResult {
   analyzed_at: string;
   simulated: boolean;
 }
+const apiBaseURL = import.meta.env.VITE_API_BASE_URL;
+const apiTimeout = Number(import.meta.env.VITE_API_TIMEOUT_MS);
 const api = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL,
-  timeout: Number(import.meta.env.VITE_API_TIMEOUT_MS),
+  baseURL: apiBaseURL,
+  timeout: apiTimeout,
 });
+const refreshApi = axios.create({ baseURL: apiBaseURL, timeout: apiTimeout });
+let refreshPromise: Promise<LoginResponse> | null = null;
+
+const clearStoredSession = () => {
+  localStorage.removeItem('token');
+  localStorage.removeItem('refresh_token');
+  localStorage.removeItem('user');
+};
 
 // Auto-attach token
 api.interceptors.request.use((config) => {
@@ -98,11 +108,33 @@ api.interceptors.request.use((config) => {
 // Handle auth errors
 api.interceptors.response.use(
   (res) => res,
-  (err) => {
-    if (err.response?.status === 401) {
-      localStorage.removeItem('token');
-      localStorage.removeItem('user');
-      window.location.href = '/login';
+  async (err) => {
+    const originalRequest = err.config as (typeof err.config & { _retry?: boolean }) | undefined;
+    const isAuthRequest = String(originalRequest?.url || '').includes('/auth/');
+    const refreshToken = localStorage.getItem('refresh_token');
+
+    if (err.response?.status === 401 && originalRequest && !originalRequest._retry && !isAuthRequest && refreshToken) {
+      originalRequest._retry = true;
+      try {
+        if (!refreshPromise) {
+          refreshPromise = refreshApi
+            .post<LoginResponse>('/auth/refresh', { refresh_token: refreshToken })
+            .then((response) => response.data)
+            .finally(() => { refreshPromise = null; });
+        }
+        const session = await refreshPromise;
+        localStorage.setItem('token', session.token);
+        localStorage.setItem('refresh_token', session.refresh_token);
+        localStorage.setItem('user', JSON.stringify(session.user));
+        originalRequest.headers.Authorization = `Bearer ${session.token}`;
+        return api.request(originalRequest);
+      } catch {
+        clearStoredSession();
+        if (window.location.pathname !== '/login') window.location.replace('/login');
+      }
+    } else if (err.response?.status === 401 && !isAuthRequest) {
+      clearStoredSession();
+      if (window.location.pathname !== '/login') window.location.replace('/login');
     }
     return Promise.reject(err);
   }

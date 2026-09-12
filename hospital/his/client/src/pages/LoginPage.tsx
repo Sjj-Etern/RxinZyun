@@ -21,7 +21,7 @@ export default function LoginPage() {
     setLoading(true);
     try {
       const data = await authApi.login(username, password);
-      login(data.user, data.token);
+      login(data.user, data.token, data.refresh_token);
       navigate('/dashboard');
     } catch (err: any) {
       setError(err.response?.data?.error || '登录失败，请重试');
