@@ -159,6 +159,9 @@ class _ScanPageState extends State<ScanPage> {
         _prescriptionsLoading = false;
       });
       await _loadPrescriptionDetail();
+      if (mounted && _selectedPrescriptionId != null) {
+        _scanFocusNode.requestFocus();
+      }
     } on DioException catch (error) {
       if (!mounted) return;
       setState(() => _prescriptionsLoading = false);
@@ -196,6 +199,9 @@ class _ScanPageState extends State<ScanPage> {
       _searchResult = null;
     });
     await _loadPrescriptionDetail();
+    if (mounted && _selectedPrescriptionId != null) {
+      _scanFocusNode.requestFocus();
+    }
   }
 
   Future<void> _processCode(String value) async {
@@ -552,7 +558,6 @@ class _ScanPageState extends State<ScanPage> {
                       TextField(
                         controller: _scanController,
                         focusNode: _scanFocusNode,
-                        enabled: _selectedPrescriptionId != null,
                         autofocus: true,
                         textInputAction: TextInputAction.done,
                         onSubmitted: (value) =>
