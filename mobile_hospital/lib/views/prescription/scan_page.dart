@@ -8,7 +8,9 @@ import 'package:his_mobile/core/network/api_client.dart';
 import 'package:his_mobile/core/theme/glass_card.dart';
 
 class ScanPage extends StatefulWidget {
-  const ScanPage({super.key});
+  final int? initialPrescriptionId;
+
+  const ScanPage({super.key, this.initialPrescriptionId});
 
   @override
   State<ScanPage> createState() => _ScanPageState();
@@ -20,7 +22,7 @@ class _TraceEntry {
   final String status;
   final String action;
   final String time;
-  final bool isError;
+  final bool isImport;
   final String? message;
 
   const _TraceEntry({
@@ -29,7 +31,7 @@ class _TraceEntry {
     required this.status,
     required this.action,
     required this.time,
-    this.isError = false,
+    this.isImport = false,
     this.message,
   });
 }
@@ -39,12 +41,23 @@ class _ScanPageState extends State<ScanPage> {
   final FocusNode _scanFocusNode = FocusNode();
   final TextEditingController _searchController = TextEditingController();
   final List<_TraceEntry> _history = [];
+  List<dynamic> _prescriptions = [];
+  Map<String, dynamic>? _prescriptionDetail;
+  int? _selectedPrescriptionId;
+  bool _prescriptionsLoading = true;
 
   _TraceEntry? _searchResult;
   String _searchError = '';
   bool _processing = false;
   String _confirmingCode = '';
   String _lastCode = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedPrescriptionId = widget.initialPrescriptionId;
+    _loadPrescriptions();
+  }
 
   @override
   void dispose() {
@@ -126,9 +139,72 @@ class _ScanPageState extends State<ScanPage> {
     return error.message ?? fallback;
   }
 
+  Future<void> _loadPrescriptions() async {
+    try {
+      final response = await ApiClient().dio.get(
+        '/api/prescriptions/scan-ready',
+      );
+      final list = response.data as List? ?? [];
+      final preferredId = _selectedPrescriptionId;
+      final preferredExists = list.any(
+        (item) => (item as Map)['id'] == preferredId,
+      );
+      final nextId = preferredExists
+          ? preferredId
+          : (list.isEmpty ? null : (list.first as Map)['id'] as int);
+      if (!mounted) return;
+      setState(() {
+        _prescriptions = list;
+        _selectedPrescriptionId = nextId;
+        _prescriptionsLoading = false;
+      });
+      await _loadPrescriptionDetail();
+    } on DioException catch (error) {
+      if (!mounted) return;
+      setState(() => _prescriptionsLoading = false);
+      _showMessage(_errorMessage(error, '可发药处方加载失败'), true);
+    }
+  }
+
+  Future<void> _loadPrescriptionDetail() async {
+    final prescriptionId = _selectedPrescriptionId;
+    if (prescriptionId == null) {
+      if (mounted) setState(() => _prescriptionDetail = null);
+      return;
+    }
+    try {
+      final response = await ApiClient().dio.get(
+        '/api/prescriptions/$prescriptionId',
+      );
+      if (mounted) {
+        setState(
+          () => _prescriptionDetail = Map<String, dynamic>.from(
+            response.data as Map,
+          ),
+        );
+      }
+    } on DioException catch (error) {
+      _showMessage(_errorMessage(error, '处方明细加载失败'), true);
+    }
+  }
+
+  Future<void> _selectPrescription(int? prescriptionId) async {
+    setState(() {
+      _selectedPrescriptionId = prescriptionId;
+      _prescriptionDetail = null;
+      _history.clear();
+      _searchResult = null;
+    });
+    await _loadPrescriptionDetail();
+  }
+
   Future<void> _processCode(String value) async {
     final code = _normalizeTraceCode(value);
     if (code.isEmpty || _processing || code == _lastCode) return;
+    if (_selectedPrescriptionId == null) {
+      _showMessage('请先选择当前处方', true);
+      return;
+    }
 
     setState(() {
       _processing = true;
@@ -142,10 +218,12 @@ class _ScanPageState extends State<ScanPage> {
         queryParameters: {'trace_code': code},
       );
       final data = Map<String, dynamic>.from(response.data as Map);
-      if (data['prescription_id'] == null) {
+      if (data['prescription_id'] != null &&
+          int.tryParse(data['prescription_id'].toString()) !=
+              _selectedPrescriptionId) {
         throw DioException(
           requestOptions: response.requestOptions,
-          message: '本药品未开处方',
+          message: '该追溯码已绑定其他处方',
         );
       }
       if (data['status']?.toString() == 'scanned_confirm') {
@@ -162,9 +240,7 @@ class _ScanPageState extends State<ScanPage> {
             : '待确认出库',
       );
       setState(() {
-        _history.removeWhere(
-          (item) => item.traceCode == entry.traceCode && !item.isError,
-        );
+        _history.removeWhere((item) => item.traceCode == entry.traceCode);
         _history.insert(0, entry);
         _searchResult = entry;
       });
@@ -172,6 +248,28 @@ class _ScanPageState extends State<ScanPage> {
       HapticFeedback.lightImpact();
       _showMessage('扫码成功，请确认后录入数据库', false);
     } on DioException catch (error) {
+      final match = error.response?.data;
+      if (match is Map &&
+          match['can_import'] == true &&
+          match['medicine_id'] != null) {
+        final entry = _TraceEntry(
+          traceCode: code,
+          medicineName: match['medicine_name']?.toString() ?? '未命名药品',
+          status: 'pending',
+          action: '本药品扫码入库',
+          time: _now(),
+          isImport: true,
+          message: '追溯码未入库，已按前 7 位匹配药品类别',
+        );
+        setState(() {
+          _history.removeWhere((item) => item.traceCode == code);
+          _history.insert(0, entry);
+          _searchResult = entry;
+        });
+        SystemSound.play(SystemSoundType.click);
+        _showMessage('已匹配药品类别，请确认扫码入库', false);
+        return;
+      }
       final message = _errorMessage(error, '扫码失败，请重试');
       HapticFeedback.heavyImpact();
       _showMessage(message, true);
@@ -211,12 +309,24 @@ class _ScanPageState extends State<ScanPage> {
 
   Future<void> _confirmEntry(_TraceEntry entry) async {
     if (_confirmingCode.isNotEmpty) return;
+    if (!entry.isImport && _selectedPrescriptionId == null) {
+      _showMessage('请先选择当前处方', true);
+      return;
+    }
     setState(() => _confirmingCode = entry.traceCode);
     try {
-      final response = await ApiClient().dio.post(
-        '/api/medicine-trace-codes/scan-by-code',
-        data: {'trace_code': entry.traceCode},
-      );
+      final response = entry.isImport
+          ? await ApiClient().dio.post(
+              '/api/medicine-trace-codes/register-by-prefix',
+              data: {'trace_code': entry.traceCode},
+            )
+          : await ApiClient().dio.post(
+              '/api/medicine-trace-codes/scan-by-code',
+              data: {
+                'trace_code': entry.traceCode,
+                'prescription_id': _selectedPrescriptionId,
+              },
+            );
       final data = Map<String, dynamic>.from(response.data as Map);
       final updatedEntry = _entryFromData(
         data,
@@ -228,7 +338,11 @@ class _ScanPageState extends State<ScanPage> {
         _searchResult = updatedEntry;
       });
       HapticFeedback.mediumImpact();
-      _showMessage('${updatedEntry.action}已确认并录入数据库', false);
+      _showMessage(
+        entry.isImport ? '追溯码已确认入库' : '${updatedEntry.action}已确认并录入数据库',
+        false,
+      );
+      if (!entry.isImport) await _loadPrescriptions();
     } on DioException catch (error) {
       HapticFeedback.heavyImpact();
       _showMessage(_errorMessage(error, '确认录入失败，请重试'), true);
@@ -321,6 +435,78 @@ class _ScanPageState extends State<ScanPage> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      const Text(
+                        '当前处理处方',
+                        style: TextStyle(fontWeight: FontWeight.w800),
+                      ),
+                      const SizedBox(height: 10),
+                      if (_prescriptionsLoading)
+                        const Center(child: CircularProgressIndicator())
+                      else if (_prescriptions.isEmpty)
+                        const Text(
+                          '暂无需要扫码的处方',
+                          style: TextStyle(color: Colors.grey),
+                        )
+                      else
+                        DropdownButtonFormField<int>(
+                          key: ValueKey(_selectedPrescriptionId),
+                          initialValue: _selectedPrescriptionId,
+                          isExpanded: true,
+                          decoration: const InputDecoration(
+                            prefixIcon: Icon(CupertinoIcons.doc_text),
+                            labelText: '选择处方',
+                          ),
+                          items: _prescriptions.map((item) {
+                            final prescription = Map<String, dynamic>.from(
+                              item as Map,
+                            );
+                            final id = prescription['id'] as int;
+                            final code =
+                                prescription['prescription_code']?.toString() ??
+                                '#$id';
+                            final patient =
+                                prescription['patient_name']?.toString() ??
+                                '未知病人';
+                            return DropdownMenuItem<int>(
+                              value: id,
+                              child: Text('$code · $patient'),
+                            );
+                          }).toList(),
+                          onChanged: (value) =>
+                              unawaited(_selectPrescription(value)),
+                        ),
+                      if (_prescriptionDetail?['items'] is List) ...[
+                        const SizedBox(height: 12),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: (_prescriptionDetail!['items'] as List).map((
+                            item,
+                          ) {
+                            final detail = Map<String, dynamic>.from(
+                              item as Map,
+                            );
+                            final bound =
+                                (detail['trace_codes'] as List?)?.length ?? 0;
+                            final quantity = detail['quantity'] ?? 0;
+                            return Chip(
+                              label: Text(
+                                '${detail['medicine_name'] ?? '药品'} $bound/$quantity${detail['unit'] ?? ''}',
+                              ),
+                            );
+                          }).toList(),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 12),
+                GlassCard(
+                  margin: EdgeInsets.zero,
+                  borderRadius: 24,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
                       Row(
                         children: [
                           Container(
@@ -366,13 +552,16 @@ class _ScanPageState extends State<ScanPage> {
                       TextField(
                         controller: _scanController,
                         focusNode: _scanFocusNode,
+                        enabled: _selectedPrescriptionId != null,
                         autofocus: true,
                         textInputAction: TextInputAction.done,
                         onSubmitted: (value) =>
                             unawaited(_submitScanInput(value)),
-                        decoration: const InputDecoration(
-                          prefixIcon: Icon(CupertinoIcons.barcode),
-                          hintText: '输入或扫描药品追溯码',
+                        decoration: InputDecoration(
+                          prefixIcon: const Icon(CupertinoIcons.barcode),
+                          hintText: _selectedPrescriptionId == null
+                              ? '请先选择当前处方'
+                              : '输入或扫描药品追溯码',
                           labelText: '扫码输入',
                         ),
                       ),
@@ -562,6 +751,13 @@ class _ScanPageState extends State<ScanPage> {
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                 ),
+                if (entry.message != null) ...[
+                  const SizedBox(height: 3),
+                  Text(
+                    entry.message!,
+                    style: const TextStyle(color: Colors.orange, fontSize: 11),
+                  ),
+                ],
               ],
             ),
           ),
@@ -572,7 +768,6 @@ class _ScanPageState extends State<ScanPage> {
   }
 
   Widget _buildHistoryEntry(_TraceEntry entry, int index, bool isDark) {
-    final color = _statusColor(entry.status);
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 10),
       child: Row(
@@ -590,12 +785,10 @@ class _ScanPageState extends State<ScanPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  entry.isError ? entry.message ?? '扫码失败' : entry.medicineName,
+                  entry.medicineName,
                   style: TextStyle(
                     fontWeight: FontWeight.w800,
-                    color: entry.isError
-                        ? Colors.redAccent
-                        : (isDark ? Colors.white : const Color(0xFF1E293B)),
+                    color: isDark ? Colors.white : const Color(0xFF1E293B),
                   ),
                 ),
                 const SizedBox(height: 3),
@@ -610,6 +803,13 @@ class _ScanPageState extends State<ScanPage> {
                   entry.time,
                   style: const TextStyle(color: Colors.grey, fontSize: 11),
                 ),
+                if (entry.message != null) ...[
+                  const SizedBox(height: 3),
+                  Text(
+                    entry.message!,
+                    style: const TextStyle(color: Colors.orange, fontSize: 11),
+                  ),
+                ],
               ],
             ),
           ),
@@ -627,10 +827,15 @@ class _ScanPageState extends State<ScanPage> {
               child: Text(
                 _confirmingCode == entry.traceCode
                     ? '录入中…'
+                    : entry.isImport
+                    ? '确认扫码入库'
                     : entry.status == 'scanned_outbound'
-                        ? '确认接收'
-                        : '确认出库',
-                style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w800),
+                    ? '确认接收'
+                    : '确认出库',
+                style: const TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w800,
+                ),
               ),
             ),
           ),

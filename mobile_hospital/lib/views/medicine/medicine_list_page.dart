@@ -2,10 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/cupertino.dart';
 import 'dart:ui';
 import 'package:dio/dio.dart';
-import 'package:provider/provider.dart';
 import 'package:his_mobile/core/network/api_client.dart';
 import 'package:his_mobile/data/models/medicine_model.dart';
-import 'package:his_mobile/providers/auth_provider.dart';
 import 'package:his_mobile/core/theme/glass_card.dart';
 import 'package:his_mobile/core/widgets/animated_scale_button.dart';
 
@@ -416,7 +414,6 @@ class _MedicineListPageState extends State<MedicineListPage> {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final isPharmacist = context.read<AuthProvider>().currentUser?.isPharmacist ?? false;
 
     return Scaffold(
       appBar: AppBar(
@@ -649,8 +646,8 @@ class _MedicineListPageState extends State<MedicineListPage> {
                                       // 展开显示 20 位追溯码 CRUD 控制面板
                                       if (isExpanded) ...[
                                         const Divider(height: 24, color: Colors.black12),
-                                        // 1. 修改前缀选项 (仅药师可用)
-                                        if (isPharmacist) ...[
+                                        // 1. 修改前缀选项
+                                        ...[
                                           Row(
                                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                             children: [
@@ -673,8 +670,8 @@ class _MedicineListPageState extends State<MedicineListPage> {
                                           ),
                                           const SizedBox(height: 12),
                                         ],
-                                        // 2. 添加追溯码表单 (仅药师可用)
-                                        if (isPharmacist) ...[
+                                        // 2. 添加追溯码表单
+                                        ...[
                                           Row(
                                             children: [
                                               Expanded(
@@ -789,7 +786,7 @@ class _MedicineListPageState extends State<MedicineListPage> {
                                                               ],
                                                             ),
                                                             // 网页端测试按钮
-                                                            if (isPharmacist) ...[
+                                                            ...[
                                                               const SizedBox(height: 8),
                                                               Row(
                                                                 mainAxisAlignment: MainAxisAlignment.end,

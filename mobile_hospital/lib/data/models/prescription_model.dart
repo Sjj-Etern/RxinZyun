@@ -3,7 +3,7 @@ class PrescriptionModel {
   final String prescriptionCode;
   final int patientId;
   final int doctorId;
-  final String status; // pending, approved, rejected, dispensing, completed
+  final String status; // pending, approved, rejected, dispensed
   final String createdAt;
   final String? patientName;
   final String? patientGender;
@@ -69,15 +69,13 @@ class PrescriptionModel {
   String get statusText {
     switch (status) {
       case 'pending':
-        return '待发药';
+        return '待审核';
       case 'approved':
-        return '待发药';
+        return '已通过';
       case 'rejected':
         return '已驳回';
-      case 'dispensing':
-        return '配药中';
-      case 'completed':
-        return '已完成';
+      case 'dispensed':
+        return '已发药';
       default:
         return status;
     }
@@ -98,10 +96,12 @@ class PrescriptionItemModel {
   final String? manufacturer;
   final String? unit;
   final String? traceCode;
-  final String? traceStatus; // pending, scanned_identify, scanned_outbound, scanned_confirm
+  final String?
+  traceStatus; // pending, scanned_identify, scanned_outbound, scanned_confirm
   final String? scan1Time;
   final String? scan2Time;
   final String? scan3Time;
+  final List<PrescriptionTraceCodeModel> traceCodes;
 
   PrescriptionItemModel({
     required this.id,
@@ -121,9 +121,33 @@ class PrescriptionItemModel {
     this.scan1Time,
     this.scan2Time,
     this.scan3Time,
+    this.traceCodes = const [],
   });
 
   factory PrescriptionItemModel.fromJson(Map<String, dynamic> json) {
+    final nestedTraceCodes = (json['trace_codes'] as List? ?? [])
+        .map(
+          (item) => PrescriptionTraceCodeModel.fromJson(
+            Map<String, dynamic>.from(item as Map),
+          ),
+        )
+        .toList();
+    String? aggregateStatus;
+    if (nestedTraceCodes.isNotEmpty) {
+      if (nestedTraceCodes.every((item) => item.status == 'scanned_confirm')) {
+        aggregateStatus = 'scanned_confirm';
+      } else if (nestedTraceCodes.any(
+        (item) => item.status == 'scanned_outbound',
+      )) {
+        aggregateStatus = 'scanned_outbound';
+      } else if (nestedTraceCodes.any(
+        (item) => item.status == 'scanned_identify',
+      )) {
+        aggregateStatus = 'scanned_identify';
+      } else {
+        aggregateStatus = 'pending';
+      }
+    }
     return PrescriptionItemModel(
       id: json['id'] as int,
       medicineId: json['medicine_id'] as int,
@@ -137,11 +161,16 @@ class PrescriptionItemModel {
       specification: json['specification'] as String?,
       manufacturer: json['manufacturer'] as String?,
       unit: json['unit'] as String?,
-      traceCode: json['trace_code'] as String?,
-      traceStatus: json['trace_status'] as String?,
+      traceCode:
+          json['trace_code'] as String? ??
+          (nestedTraceCodes.isEmpty
+              ? null
+              : nestedTraceCodes.map((item) => item.traceCode).join('、')),
+      traceStatus: json['trace_status'] as String? ?? aggregateStatus,
       scan1Time: json['scan1_time'] as String?,
       scan2Time: json['scan2_time'] as String?,
       scan3Time: json['scan3_time'] as String?,
+      traceCodes: nestedTraceCodes,
     );
   }
 
@@ -164,6 +193,7 @@ class PrescriptionItemModel {
       'scan1_time': scan1Time,
       'scan2_time': scan2Time,
       'scan3_time': scan3Time,
+      'trace_codes': traceCodes.map((item) => item.toJson()).toList(),
     };
   }
 
@@ -182,4 +212,38 @@ class PrescriptionItemModel {
         return '未知';
     }
   }
+}
+
+class PrescriptionTraceCodeModel {
+  final String traceCode;
+  final String status;
+  final String? scan1Time;
+  final String? scan2Time;
+  final String? scan3Time;
+
+  const PrescriptionTraceCodeModel({
+    required this.traceCode,
+    required this.status,
+    this.scan1Time,
+    this.scan2Time,
+    this.scan3Time,
+  });
+
+  factory PrescriptionTraceCodeModel.fromJson(Map<String, dynamic> json) {
+    return PrescriptionTraceCodeModel(
+      traceCode: json['trace_code']?.toString() ?? '',
+      status: json['trace_status']?.toString() ?? 'pending',
+      scan1Time: json['scan1_time'] as String?,
+      scan2Time: json['scan2_time'] as String?,
+      scan3Time: json['scan3_time'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'trace_code': traceCode,
+    'trace_status': status,
+    'scan1_time': scan1Time,
+    'scan2_time': scan2Time,
+    'scan3_time': scan3Time,
+  };
 }

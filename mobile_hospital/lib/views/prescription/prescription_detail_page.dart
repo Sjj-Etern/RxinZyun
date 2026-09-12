@@ -9,7 +9,7 @@ import 'package:his_mobile/data/models/prescription_model.dart';
 import 'package:his_mobile/providers/auth_provider.dart';
 import 'package:his_mobile/core/theme/glass_card.dart';
 import 'package:his_mobile/core/widgets/animated_scale_button.dart';
-import 'scanner_page.dart';
+import 'scan_page.dart';
 
 class PrescriptionDetailPage extends StatefulWidget {
   final int prescriptionId;
@@ -130,93 +130,11 @@ class _PrescriptionDetailPageState extends State<PrescriptionDetailPage> {
   }
   // 触发相机扫码复核追溯码
   Future<void> _handleScanCode() async {
-    final scannedCode = await Navigator.push<String>(
+    await Navigator.push<void>(
       context,
-      MaterialPageRoute(builder: (context) => const ScannerPage()),
+      MaterialPageRoute(builder: (context) => ScanPage(initialPrescriptionId: widget.prescriptionId)),
     );
-
-    if (scannedCode != null && scannedCode.isNotEmpty) {
-      await _processScannedCode(scannedCode);
-    }
-  }
-
-  Future<void> _processScannedCode(String code) async {
-    setState(() {
-      _isLoading = true;
-    });
-
-    try {
-      final lookupResponse = await ApiClient().dio.get(
-        '/api/medicine-trace-codes/lookup',
-        queryParameters: {'trace_code': code},
-      );
-      final lookupData = Map<String, dynamic>.from(lookupResponse.data as Map);
-      if (lookupData['prescription_id'] == null) {
-        throw DioException(
-          requestOptions: lookupResponse.requestOptions,
-          message: '本药品未开处方',
-        );
-      }
-      if (lookupData['status']?.toString() == 'scanned_confirm') {
-        throw DioException(
-          requestOptions: lookupResponse.requestOptions,
-          message: '本药品已完成全部扫描',
-        );
-      }
-
-      if (!mounted) return;
-      final action = lookupData['status']?.toString() == 'scanned_outbound'
-          ? '确认接收'
-          : '确认出库';
-      final confirmed = await showDialog<bool>(
-        context: context,
-        builder: (dialogContext) => AlertDialog(
-          title: const Text('确认扫码结果'),
-          content: Text('药品：${lookupData['medicine_name'] ?? '未命名药品'}\n追溯码：${lookupData['trace_code'] ?? code}\n\n确认后将写入数据库。'),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('取消')),
-            FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: Text(action)),
-          ],
-        ),
-      );
-      if (confirmed != true) return;
-
-      final response = await ApiClient().dio.post(
-        '/api/medicine-trace-codes/scan-by-code',
-        data: {'trace_code': code},
-      );
-
-      if (response.statusCode == 200 && mounted) {
-        final data = response.data;
-        final actionName = data['action']?.toString() ?? '推进';
-        final isCompleted = data['completed'] as bool? ?? false;
-        final medicineName = data['medicine_name']?.toString() ?? '药品';
-
-        // 顶层悬浮动态岛弹窗展示结果，无需阻塞式弹窗
-        _showFloatingAlert(
-          '[$medicineName] $actionName成功！${isCompleted ? "已完成复合验证" : ""}',
-          true,
-        );
-        
-        _fetchDetails();
-      }
-    } on DioException catch (e) {
-      HapticFeedback.heavyImpact(); // 失败强震动
-      final err = e.response?.data?['error']?.toString() ?? '药品追溯码校验失败';
-      _showFloatingAlert(err, false);
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
-      }
-    }
-  }
-
-  // 判断是否已完成所有的追溯码扫描
-  bool get _allScanned {
-    if (_prescription == null || _prescription!.items.isEmpty) return false;
-    return _prescription!.items.every((item) => item.traceStatus == 'scanned_confirm');
+    await _fetchDetails();
   }
 
   @override
@@ -242,7 +160,7 @@ class _PrescriptionDetailPageState extends State<PrescriptionDetailPage> {
         backgroundColor: Colors.transparent,
         elevation: 0,
         actions: [
-          if (isPharmacist && (p.status == 'approved' || p.status == 'dispensing'))
+          if (p.status == 'approved' || p.status == 'dispensed')
             IconButton(
               icon: const Icon(CupertinoIcons.barcode_viewfinder, color: Color(0xFF009688), size: 26),
               onPressed: _handleScanCode,
@@ -305,13 +223,11 @@ class _PrescriptionDetailPageState extends State<PrescriptionDetailPage> {
                           const SizedBox(height: 24),
 
                           // 4. 发药操作面板
-                          if (isPharmacist) ...[
-                            // 待发药 -> 扫码出库 / 确认发药
-                            if (p.status == 'approved' || p.status == 'dispensing')
+                          if (p.status == 'approved' || p.status == 'dispensed') ...[
                               Column(
                                 crossAxisAlignment: CrossAxisAlignment.stretch,
                                 children: [
-                                  AnimatedScaleButton(
+                                  if (isPharmacist && p.status == 'approved') AnimatedScaleButton(
                                     onTap: _handleScanCode,
                                     child: Container(
                                       padding: const EdgeInsets.symmetric(vertical: 16),
@@ -351,11 +267,9 @@ class _PrescriptionDetailPageState extends State<PrescriptionDetailPage> {
                                       ),
                                       child: Center(
                                         child: Text(
-                                          _allScanned ? '确认发药' : '直接确认发药(跳过扫码)',
+                                          '确认发药',
                                           style: TextStyle(
-                                            color: _allScanned 
-                                                ? (isDark ? const Color(0xFF4DB6AC) : const Color(0xFF00796B))
-                                                : (isDark ? Colors.white70 : Colors.black87),
+                                            color: isDark ? const Color(0xFF4DB6AC) : const Color(0xFF00796B),
                                             fontWeight: FontWeight.w800,
                                             fontSize: 14,
                                           ),
@@ -470,13 +384,12 @@ class _PrescriptionDetailPageState extends State<PrescriptionDetailPage> {
     switch (p.status) {
       case 'pending':
         stateColor = const Color(0xFFFF9F0A);
-        stateTitle = '待发药';
-        stateDesc = '处方已进入发药队列，请扫码出库或确认发药';
+        stateTitle = '待审核';
+        stateDesc = '处方正在等待审核';
         break;
       case 'approved':
-      case 'dispensing':
         stateColor = const Color(0xFF30D158);
-        stateTitle = '待发药';
+        stateTitle = '已通过';
         stateDesc = '处方已进入发药环节，请扫码出库或确认发药';
         break;
       case 'dispensed':

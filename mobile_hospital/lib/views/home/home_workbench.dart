@@ -72,7 +72,7 @@ class _HomeWorkbenchState extends State<HomeWorkbench> {
     try {
       final dio = ApiClient().dio;
       // 1. 待发药处方
-      final resPres = await dio.get('/api/prescriptions', queryParameters: {'status': 'approved', 'pageSize': 1});
+      final resPres = await dio.get('/api/prescriptions', queryParameters: {'status': 'pending', 'pageSize': 1});
       // 2. 药品总类
       final resMed = await dio.get('/api/medicines', queryParameters: {'pageSize': 1});
       // 3. 在册病人
@@ -128,9 +128,7 @@ class _HomeWorkbenchState extends State<HomeWorkbench> {
         currentBody = const ScanPage();
         break;
       case 3:
-        currentBody = user.isDoctor || user.role == 'admin'
-            ? const PatientListPage()
-            : _buildNoPermissionView('医生');
+        currentBody = const PatientListPage();
         break;
       case 4:
         currentBody = const MedicineListPage(); // 所有人可查看药品管理
@@ -449,7 +447,7 @@ class _HomeWorkbenchState extends State<HomeWorkbench> {
                                         ),
                                         const SizedBox(height: 2),
                                         Text(
-                                          '待发药处方',
+                                          '待审核处方',
                                           style: TextStyle(
                                             color: isDark ? const Color(0xFF80CBC4) : const Color(0xFF00796B),
                                             fontSize: 11,
@@ -610,8 +608,7 @@ class _HomeWorkbenchState extends State<HomeWorkbench> {
                           color: const Color(0xFF00897B),
                           onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const DeliveryRecordsPage())),
                         ),
-                        if (user.isPharmacist)
-                          _buildActionCard(
+                        _buildActionCard(
                             title: '发药管理',
                             subtitle: '选择机器人确认发药',
                             icon: CupertinoIcons.paperplane,
@@ -743,11 +740,8 @@ class _HomeWorkbenchState extends State<HomeWorkbench> {
                                     case 'approved':
                                       statusColor = const Color(0xFF007AFF);
                                       break;
-                                    case 'dispensing':
-                                      statusColor = const Color(0xFFBF5AF2);
-                                      break;
-                                    case 'completed':
-                                      statusColor = const Color(0xFF30D158);
+                                    case 'dispensed':
+                                      statusColor = const Color(0xFF0A84FF);
                                       break;
                                     case 'rejected':
                                       statusColor = const Color(0xFFFF453A);

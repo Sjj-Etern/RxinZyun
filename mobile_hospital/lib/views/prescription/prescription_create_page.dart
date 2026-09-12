@@ -7,6 +7,7 @@ import 'package:his_mobile/data/models/patient_model.dart';
 import 'package:his_mobile/data/models/medicine_model.dart';
 import 'package:his_mobile/core/theme/glass_card.dart';
 import 'package:his_mobile/core/widgets/animated_scale_button.dart';
+import 'package:his_mobile/views/prescription/scan_page.dart';
 
 class PrescriptionCreatePage extends StatefulWidget {
   const PrescriptionCreatePage({super.key});
@@ -27,7 +28,7 @@ class _PrescriptionCreatePageState extends State<PrescriptionCreatePage> {
   final _noteController = TextEditingController();
 
   PatientModel? _selectedPatient;
-  final List<Map<String, dynamic>> _selectedItems = []; // 包含 medicine, dosage, usage, frequency, days, quantity, trace_code, note
+  final List<Map<String, dynamic>> _selectedItems = []; // 包含 medicine, dosage, usage, frequency, days, quantity, note
   bool _isLoading = false;
 
   final List<String> _prescriptionTypes = ['普通', '急诊', '儿科', '麻醉精一', '精二'];
@@ -261,13 +262,12 @@ class _PrescriptionCreatePageState extends State<PrescriptionCreatePage> {
     );
   }
 
-  // 配置单个药品的具体用量、追溯码等 (Cupertino Form Dialogue)
-  void _showMedicineFormDialog(MedicineModel medicine, {String traceCode = ''}) {
+  // 配置单个药品的具体用量；追溯码在处方创建后通过出库追溯绑定。
+  void _showMedicineFormDialog(MedicineModel medicine) {
     final formKey = GlobalKey<FormState>();
     final dosageController = TextEditingController(text: '1片/次');
     final daysController = TextEditingController(text: '3');
     final quantityController = TextEditingController(text: '1');
-    final traceController = TextEditingController(text: traceCode);
     final noteController = TextEditingController();
 
     String usageMethod = '口服';
@@ -354,16 +354,6 @@ class _PrescriptionCreatePageState extends State<PrescriptionCreatePage> {
                           ],
                         ),
                         const SizedBox(height: 12),
-                        
-                        _buildDialogInputField(
-                          controller: traceController,
-                          labelText: '20位追溯码',
-                          placeholder: '请输入药品追溯码',
-                          isDark: isDark,
-                          validator: (v) => v!.trim().isEmpty ? '追溯码必填' : null,
-                        ),
-                        const SizedBox(height: 12),
-                        
                         _buildDialogInputField(
                           controller: noteController,
                           labelText: '备注说明',
@@ -397,7 +387,6 @@ class _PrescriptionCreatePageState extends State<PrescriptionCreatePage> {
                         'frequency': frequency,
                         'days': int.parse(daysController.text),
                         'quantity': int.parse(quantityController.text),
-                        'trace_code': traceController.text.trim(),
                         'note': noteController.text.trim(),
                       });
                     });
@@ -462,7 +451,6 @@ class _PrescriptionCreatePageState extends State<PrescriptionCreatePage> {
           'frequency': item['frequency'],
           'days': item['days'],
           'quantity': item['quantity'],
-          'trace_code': item['trace_code'],
           'note': item['note'],
         };
       }).toList(),
@@ -472,11 +460,15 @@ class _PrescriptionCreatePageState extends State<PrescriptionCreatePage> {
       final response = await ApiClient().dio.post('/api/prescriptions', data: payload);
       if (response.statusCode == 201 && mounted) {
         final code = response.data['prescription_code'];
+        final prescriptionId = response.data['id'] as int;
         HapticFeedback.mediumImpact();
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('处方已创建并进入发药环节！编号: $code'), backgroundColor: const Color(0xFF30D158)),
+          SnackBar(content: Text('处方已创建，请继续扫码绑定追溯码。编号: $code'), backgroundColor: const Color(0xFF30D158)),
         );
-        Navigator.pop(context, true); // 成功返回
+        await Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => ScanPage(initialPrescriptionId: prescriptionId)),
+        );
       }
     } on DioException catch (e) {
       final err = e.response?.data?['error']?.toString() ?? '处方提交失败';
@@ -763,7 +755,7 @@ class _PrescriptionCreatePageState extends State<PrescriptionCreatePage> {
                                                     ),
                                                     const SizedBox(height: 6),
                                                     Text(
-                                                      '剂量: ${item['dosage']} | 用法: ${item['usage_method']} | 频次: ${item['frequency']}\n疗程: ${item['days']}天 | 开药总量: ${item['quantity']} ${med.unit}\n追溯码: ${item['trace_code']}',
+                                                      '剂量: ${item['dosage']} | 用法: ${item['usage_method']} | 频次: ${item['frequency']}\n疗程: ${item['days']}天 | 开药总量: ${item['quantity']} ${med.unit}',
                                                       style: const TextStyle(fontSize: 11, color: Colors.grey, height: 1.4),
                                                     ),
                                                   ],

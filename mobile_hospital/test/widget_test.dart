@@ -1,30 +1,47 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-
-import 'package:his_mobile/main.dart';
+import 'package:his_mobile/data/models/prescription_model.dart';
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const MyApp());
+  test('处方模型按网页端状态和多追溯码结构解析', () {
+    final prescription = PrescriptionModel.fromJson({
+      'id': 12,
+      'prescription_code': 'RX-0012',
+      'patient_id': 3,
+      'doctor_id': 5,
+      'status': 'dispensed',
+      'created_at': '2026-09-12 10:00:00',
+      'items': [
+        {
+          'id': 21,
+          'medicine_id': 8,
+          'quantity': 2,
+          'medicine_name': '测试药品',
+          'trace_codes': [
+            {
+              'trace_code': '12345670000000000001',
+              'trace_status': 'scanned_confirm',
+              'scan1_time': null,
+              'scan2_time': '2026-09-12 10:01:00',
+              'scan3_time': '2026-09-12 10:02:00',
+            },
+            {
+              'trace_code': '12345670000000000002',
+              'trace_status': 'scanned_outbound',
+              'scan1_time': null,
+              'scan2_time': '2026-09-12 10:03:00',
+              'scan3_time': null,
+            },
+          ],
+        },
+      ],
+    });
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
-
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
-    await tester.pump();
-
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+    expect(prescription.statusText, '已发药');
+    expect(prescription.items.single.traceCodes, hasLength(2));
+    expect(prescription.items.single.traceStatus, 'scanned_outbound');
+    expect(
+      prescription.items.single.traceCode,
+      '12345670000000000001、12345670000000000002',
+    );
   });
 }

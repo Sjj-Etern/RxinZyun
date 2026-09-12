@@ -1,12 +1,11 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter/cupertino.dart';
 import 'dart:ui';
 import 'package:dio/dio.dart';
 import 'package:his_mobile/core/network/api_client.dart';
 import 'package:his_mobile/data/models/prescription_model.dart';
 import 'prescription_detail_page.dart';
-import 'scanner_page.dart';
+import 'scan_page.dart';
 import 'package:his_mobile/core/theme/glass_card.dart';
 import 'package:his_mobile/core/widgets/animated_scale_button.dart';
 
@@ -25,15 +24,15 @@ class _PrescriptionListPageState extends State<PrescriptionListPage> with Single
   int _page = 1;
   int _total = 0;
   final int _pageSize = 10;
-  String _selectedStatus = 'pending'; // 默认待审核
+  String _selectedStatus = '';
 
   // 映射 Tab 索引到 API 的 status 值
   final List<Map<String, String>> _tabs = [
+    {'title': '全部', 'status': ''},
     {'title': '待审核', 'status': 'pending'},
-    {'title': '待配药', 'status': 'approved'},
-    {'title': '配药中', 'status': 'dispensing'},
-    {'title': '已完成', 'status': 'completed'},
+    {'title': '已通过', 'status': 'approved'},
     {'title': '已驳回', 'status': 'rejected'},
+    {'title': '已发药', 'status': 'dispensed'},
   ];
 
   @override
@@ -109,9 +108,7 @@ class _PrescriptionListPageState extends State<PrescriptionListPage> with Single
         return Colors.orange;
       case 'approved':
         return Colors.blue;
-      case 'dispensing':
-        return Colors.purple;
-      case 'completed':
+      case 'dispensed':
         return Colors.green;
       case 'rejected':
         return Colors.red;
@@ -121,127 +118,11 @@ class _PrescriptionListPageState extends State<PrescriptionListPage> with Single
   }
 
   Future<void> _handleScanCode() async {
-    final scannedCode = await Navigator.push<String>(
+    await Navigator.push<void>(
       context,
-      MaterialPageRoute(builder: (context) => const ScannerPage()),
+      MaterialPageRoute(builder: (context) => const ScanPage()),
     );
-
-    if (scannedCode != null && scannedCode.isNotEmpty) {
-      await _processScannedCode(scannedCode);
-    }
-  }
-
-  Future<void> _processScannedCode(String code) async {
-    setState(() {
-      _isLoading = true;
-    });
-
-    try {
-      final lookupResponse = await ApiClient().dio.get(
-        '/api/medicine-trace-codes/lookup',
-        queryParameters: {'trace_code': code},
-      );
-      final lookupData = Map<String, dynamic>.from(lookupResponse.data as Map);
-      if (lookupData['prescription_id'] == null) {
-        throw DioException(
-          requestOptions: lookupResponse.requestOptions,
-          message: '本药品未开处方',
-        );
-      }
-      if (lookupData['status']?.toString() == 'scanned_confirm') {
-        throw DioException(
-          requestOptions: lookupResponse.requestOptions,
-          message: '本药品已完成全部扫描',
-        );
-      }
-
-      if (!mounted) return;
-      final action = lookupData['status']?.toString() == 'scanned_outbound'
-          ? '确认接收'
-          : '确认出库';
-      final confirmed = await showDialog<bool>(
-        context: context,
-        builder: (dialogContext) => AlertDialog(
-          title: const Text('确认扫码结果'),
-          content: Text('药品：${lookupData['medicine_name'] ?? '未命名药品'}\n追溯码：${lookupData['trace_code'] ?? code}\n\n确认后将写入数据库。'),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('取消')),
-            FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: Text(action)),
-          ],
-        ),
-      );
-      if (confirmed != true) return;
-
-      final response = await ApiClient().dio.post(
-        '/api/medicine-trace-codes/scan-by-code',
-        data: {'trace_code': code},
-      );
-
-      if (response.statusCode == 200) {
-        HapticFeedback.mediumImpact();
-        
-        final data = response.data;
-        final actionName = data['action']?.toString() ?? '推进';
-        final medicineName = data['medicine_name']?.toString() ?? '药品';
-
-        if (mounted) {
-          showModalBottomSheet(
-            context: context,
-            backgroundColor: const Color(0xFF00796B),
-            shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-            builder: (context) {
-              return Padding(
-                padding: const EdgeInsets.all(24.0),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.check_circle_outline, color: Colors.white, size: 64),
-                    const SizedBox(height: 16),
-                    Text(
-                      '[$medicineName] $actionName成功！',
-                      style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(height: 8),
-                    const Text(
-                      '处方追踪码流转状态已自动更新！',
-                      style: TextStyle(color: Colors.white70, fontSize: 14),
-                    ),
-                    const SizedBox(height: 24),
-                    SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton(
-                        onPressed: () => Navigator.pop(context),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.white,
-                          foregroundColor: const Color(0xFF00796B),
-                          padding: const EdgeInsets.symmetric(vertical: 14),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                        ),
-                        child: const Text('我知道了', style: TextStyle(fontWeight: FontWeight.bold)),
-                      ),
-                    ),
-                  ],
-                ),
-              );
-            },
-          );
-        }
-        
-        _fetchPrescriptions(refresh: true);
-      }
-    } on DioException catch (e) {
-      final errorMsg = e.response?.data['error']?.toString() ?? e.message ?? '未知网络错误';
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('扫码配药失败: $errorMsg'),
-          backgroundColor: Colors.red,
-        ),
-      );
-    } finally {
-      setState(() {
-        _isLoading = false;
-      });
-    }
+    await _fetchPrescriptions(refresh: true);
   }
 
   Widget _buildBackgroundGlows(bool isDark) {
